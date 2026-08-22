@@ -1,0 +1,6 @@
+#profiles
+checkpoints/
+runs/
+save/
+#logs
+*.out

@@ -1,0 +1,45 @@
+train_dataset:
+  batch_size: 32
+  dataset:
+    name: image-folder
+    args:
+      root_path: ./problemclass2/FlowData_train_small.list
+  wrapper:
+    name: sr-implicit-downsampled-fast
+    args:
+      inp_size: 256
+
+val_dataset:
+  batch_size: 4
+  dataset:
+    name: image-folder
+    args:
+      root_path: ./problemclass2/FlowData_val.list
+  wrapper:
+    name: sr-implicit-downsampled-fast
+    args:
+      inp_size: 256
+      random_crop: false
+
+
+
+model:
+  name: stereo_gt
+  args:
+    width: 128
+    blocks: 16
+    iters: 5
+optimizer:
+  name: adam
+  args:
+    lr: 1.e-4
+
+epoch_max: 10
+warmup_step_lr:
+  multiplier: 5
+  total_epoch: 120
+
+
+epoch_val: 10
+epoch_save: 100
+

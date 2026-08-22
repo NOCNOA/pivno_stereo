@@ -1,0 +1,6 @@
+#weight
+*.pth
+
+#logs
+*.log
+*.out

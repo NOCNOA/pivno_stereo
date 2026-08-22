@@ -1,0 +1,14 @@
+test_dataset:
+  dataset:
+    name: test-folder
+    args:
+      root_path: ./stereo/FlowData_test.list
+      disparity_scale: 1.0
+  wrapper:
+    name: sr-implicit-downsampled-fast
+    args:
+      inp_size: [256, 768]
+      random_crop: false
+  batch_size: 1
+
+model_path: ./save/_train_stereo/epoch-best.pth

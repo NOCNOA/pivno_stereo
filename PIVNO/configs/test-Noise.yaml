@@ -1,0 +1,13 @@
+test_dataset:
+  dataset:
+    name: test-folder
+    args:
+      root_path: ./problemclass2/FlowData_test.list
+      #uniform， backstep， cylinder， JHTDB， DNS_turbulence， SQG
+      type: backstep
+  wrapper:
+      name: sr-implicit-downsampled-fast
+      args: {}
+  batch_size: 4
+model_path: ./save/_train_PIV-Noise/epoch-best.pth
+

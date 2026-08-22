@@ -1,0 +1,12 @@
+test_dataset:
+  dataset:
+    name: test-folder
+    args:
+      root_path: ./PIV-genImages/FlowData_test.list
+      #uniform， backstep， cylinder， JHTDB， DNS_turbulence， SQG
+      type: cylinder
+  wrapper:
+      name: sr-implicit-downsampled-fast
+      args: {}
+  batch_size: 1
+model_path: ./save/_train_PIV-genImages/epoch-best.pth
