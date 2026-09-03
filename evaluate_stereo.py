@@ -19,7 +19,18 @@ from core.defom_pact2 import DEFOMStereo as PACT2DEFOMStereo
 from core.defom_pact2_gev import DEFOMStereo as PACT2GEVDEFOMStereo
 from core.pivno_models.defom_pact_pivno import DEFOMStereo as PACTPIVNODEFOMStereo
 from core.pivno_models.defom_pivno import DEFOMStereo as PIVNODEFOMStereo
+from core.pivno_models.defom_pivno_mobilenetv2 import DEFOMStereo as MobileNetV2PIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated import DEFOMStereo as GatedPIVNODEFOMStereo
+from core.pivno_models.defom_pivno_gated_gru1 import DEFOMStereo as GatedGRU1PIVNODEFOMStereo
+from core.pivno_models.defom_pivno_gated_gru3 import DEFOMStereo as GatedGRU3PIVNODEFOMStereo
+from core.pivno_models.defom_pivno_gated_gru_kernel_ablation import DEFOMStereo as GatedGRUKernelAblationPIVNODEFOMStereo
+from core.pivno_models.defom_pivno_gated_gru3_gwc4_mask_sr import DEFOMStereo as GatedGRU3GWC4MaskSRPIVNODEFOMStereo
+from core.pivno_models.defom_pivno_gated_gru3_gwc4_mask_rgb_sr import DEFOMStereo as GatedGRU3GWC4MaskRGBSRPIVNODEFOMStereo
+from core.pivno_models.defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr import DEFOMStereo as GatedGRU3GWC4MaskRGBHiddenSRPIVNODEFOMStereo
+from core.pivno_models.defom_pivno_gated_gru3_gwc4_mask_last_delta_sr import DEFOMStereo as GatedGRU3GWC4MaskLastDeltaSRPIVNODEFOMStereo
+from core.pivno_models.defom_pivno_gated_gru3_gwc4_last_delta_direct_sr import DEFOMStereo as GatedGRU3GWC4LastDeltaDirectSRPIVNODEFOMStereo
+from core.pivno_models.defom_pivno_gwc4_enc16_concat_gru3 import DEFOMStereo as GWC4Enc16ConcatGRU3PIVNODEFOMStereo
+from core.pivno_models.defom_pivno_gwc4_enc16_concat_gru3_mask_sr import DEFOMStereo as GWC4Enc16ConcatGRU3MaskSRPIVNODEFOMStereo
 try:
     from core.defom_cor_ga import DEFOMStereo as CorGADEFOMStereo, autocast
 except ModuleNotFoundError:
@@ -167,6 +178,48 @@ def _valid_disparity_mask(valid, disp_gt, max_disp=None):
     if max_disp is not None and max_disp > 0:
         mask = mask & (disp_gt < float(max_disp))
     return mask.reshape(-1)
+
+
+def _normalize_disparity_thresholds(thresholds):
+    values = tuple(float(value) for value in thresholds)
+    if not values:
+        raise ValueError("at least one disparity threshold is required")
+    if any(not np.isfinite(value) or value <= 0 for value in values):
+        raise ValueError(
+            f"disparity thresholds must be finite and positive, got {values}"
+        )
+    if any(right <= left for left, right in zip(values, values[1:])):
+        raise ValueError(
+            f"disparity thresholds must be strictly increasing, got {values}"
+        )
+    return values
+
+
+def _per_image_threshold_statistics(
+    epe, valid, disp_gt, thresholds, bad_threshold=3.0
+):
+    """Return pixel and image statistics for nested ``[0, threshold)`` masks."""
+    if epe.ndim != 1:
+        raise ValueError(f"flattened EPE must be 1D, got {tuple(epe.shape)}")
+    results = []
+    for threshold in _normalize_disparity_thresholds(thresholds):
+        mask = _valid_disparity_mask(valid, disp_gt, threshold)
+        if mask.numel() != epe.numel():
+            raise ValueError(
+                f"mask/EPE size mismatch: {mask.numel()} vs {epe.numel()}"
+            )
+        if not bool(mask.any()):
+            results.append((0.0, 0.0, 0, 0, 0))
+            continue
+        selected = epe[mask]
+        results.append((
+            float(selected.sum().item()),
+            float(selected.mean().item()),
+            1,
+            int((selected > float(bad_threshold)).sum().item()),
+            int(selected.numel()),
+        ))
+    return results
 
 def _middlebury_region_masks(mask_image, disp_gt, max_disp=None):
     """Build All/Occ/Nocc masks from Middlebury's 0/128/255 mask codes."""
@@ -380,6 +433,155 @@ def validate_things(model, iters=32, scale_iters=8, mixed_prec=False,
               f"{format(aggregate_fps, '.2f')}-FPS aggregate "
               f"({format(avg_runtime, '.3f')}s/image/GPU)")
     return {'things-epe': epe, 'things-out': out}
+
+
+@torch.no_grad()
+def validate_things_disparity_thresholds(
+    model,
+    thresholds,
+    iters=32,
+    scale_iters=8,
+    mixed_prec=False,
+    bad_threshold=3.0,
+    batch_size=1,
+):
+    """Evaluate nested GT ranges in one FlyingThings3D inference pass.
+
+    For each threshold ``T``, statistics use
+    ``valid & finite & (0 <= disp_gt < T)``. Pixel EPE and Out3 are globally
+    pixel-weighted; image EPE preserves the legacy per-image aggregation.
+    """
+    thresholds = _normalize_disparity_thresholds(thresholds)
+    if batch_size <= 0:
+        raise ValueError(f"evaluation batch size must be positive, got {batch_size}")
+    model.eval()
+    val_dataset = datasets.SceneFlowDatasets(
+        dstype='frames_finalpass', things_test=True
+    )
+
+    # Per threshold: pixel-EPE sum, image-EPE sum, image count, Out3 count,
+    # valid-pixel count.
+    accumulators = [[0.0, 0.0, 0, 0, 0] for _ in thresholds]
+    elapsed_sum = 0.0
+    elapsed_count = 0
+    indices = list(_validation_indices(len(val_dataset)))
+    batch_starts = range(0, len(indices), batch_size)
+    for batch_start in tqdm(batch_starts, disable=not _is_main_process()):
+        batch_ids = indices[batch_start:batch_start + batch_size]
+        data_blobs = [val_dataset[val_id] for val_id in batch_ids]
+        image_shapes = {tuple(item["img1"].shape) for item in data_blobs}
+        if len(image_shapes) != 1:
+            raise ValueError(
+                "FlyingThings evaluation batching requires equal image sizes; "
+                f"batch indices {batch_ids} have shapes {sorted(image_shapes)}"
+            )
+
+        image1 = torch.stack([item["img1"] for item in data_blobs]).cuda()
+        image2 = torch.stack([item["img2"] for item in data_blobs]).cuda()
+        padder = InputPadder(image1.shape, divis_by=32)
+        image1, image2 = padder.pad(image1, image2)
+        start = time.time()
+        disp_pr = _eval_forward(
+            model,
+            mixed_prec,
+            image1,
+            image2,
+            iters=iters,
+            scale_iters=scale_iters,
+            test_mode=True,
+        )
+        end = time.time()
+        if min(batch_ids) > 50:
+            elapsed_sum += end - start
+            elapsed_count += len(batch_ids)
+
+        disp_pr_batch = padder.unpad(disp_pr).cpu()
+        for batch_index, (val_id, data_blob) in enumerate(
+            zip(batch_ids, data_blobs)
+        ):
+            prediction = disp_pr_batch[batch_index]
+            disp_gt = data_blob["disp"]
+            valid = data_blob["valid"]
+            path = data_blob["imageL_file"]
+            assert prediction.shape == disp_gt.shape, (
+                prediction.shape, disp_gt.shape
+            )
+            epe = torch.sum(
+                torch.abs(prediction - disp_gt), dim=0
+            ).flatten()
+            largest_mask = _valid_disparity_mask(
+                valid, disp_gt, thresholds[-1]
+            )
+            if bool(largest_mask.any()):
+                _require_finite_prediction(
+                    prediction, largest_mask, str(path)
+                )
+
+            image_statistics = _per_image_threshold_statistics(
+                epe,
+                valid,
+                disp_gt,
+                thresholds,
+                bad_threshold=bad_threshold,
+            )
+            for accumulator, values in zip(
+                accumulators, image_statistics
+            ):
+                for index, value in enumerate(values):
+                    accumulator[index] += value
+
+            if _is_main_process() and (
+                val_id < 20 or (val_id + 1) % 1000 == 0
+            ):
+                logging.info(
+                    "FlyingThings3D range evaluation %d/%d; batch=%d "
+                    "runtime=%.3fs",
+                    val_id + 1,
+                    len(val_dataset),
+                    len(batch_ids),
+                    end - start,
+                )
+
+    flattened = [value for row in accumulators for value in row]
+    reduced = _sum_across_processes(
+        flattened + [elapsed_sum, elapsed_count]
+    )
+    reduced_rows = reduced[:-2].reshape(len(thresholds), 5)
+    elapsed_sum, elapsed_count = reduced[-2:]
+    avg_runtime = (
+        elapsed_sum / elapsed_count if elapsed_count > 0 else float("nan")
+    )
+    results = {}
+    for threshold, row in zip(thresholds, reduced_rows):
+        pixel_epe_sum, image_epe_sum, image_count, outlier_count, valid_count = row
+        _require_nonempty_evaluation(
+            valid_count, f"FlyingThings3D [0,{threshold:g})"
+        )
+        pixel_epe = pixel_epe_sum / valid_count
+        image_epe = image_epe_sum / image_count
+        out3 = 100.0 * outlier_count / valid_count
+        key = f"things-lt-{threshold:g}"
+        results[f"{key}-pixel-epe"] = pixel_epe
+        results[f"{key}-image-epe"] = image_epe
+        results[f"{key}-out"] = out3
+        results[f"{key}-valid-pixels"] = int(valid_count)
+        if _is_main_process():
+            print(
+                f"Validation FlyingThings [0,{threshold:g}): "
+                f"PixelEPE {pixel_epe}, ImageEPE {image_epe}, "
+                f"Out{bad_threshold} {out3}, "
+                f"ValidPixels {int(valid_count)}, "
+                f"Images {int(image_count)}"
+            )
+
+    if _is_main_process():
+        aggregate_fps = _world_size() / avg_runtime
+        print(
+            "Validation FlyingThings disparity thresholds: "
+            f"{aggregate_fps:.2f}-FPS aggregate "
+            f"({avg_runtime:.3f}s/image/GPU)"
+        )
+    return results
 
 
 @torch.no_grad()
@@ -717,7 +919,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument(
         '--model',
-        choices=['cor_ga', 'pact', 'pact_smd', 'pact_smd_post', 'pact_bilap_gru', 'pact2', 'pact2_gev', 'pact_pivno', 'defom_pivno', 'defom_pivno_gated'],
+        choices=['cor_ga', 'pact', 'pact_smd', 'pact_smd_post', 'pact_bilap_gru', 'pact2', 'pact2_gev', 'pact_pivno', 'defom_pivno', 'defom_pivno_mobilenetv2', 'defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr', 'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr', 'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr', 'defom_pivno_gwc4_enc16_concat_gru3', 'defom_pivno_gwc4_enc16_concat_gru3_mask_sr'],
         default='cor_ga',
         help="model family; PACT is opt-in to preserve old checkpoint loading",
     )
@@ -729,8 +931,27 @@ if __name__ == '__main__':
                         help='model search range; required for PACT checkpoints')
     parser.add_argument('--eval_max_disp', type=float, default=1000.0,
                         help='independent upper bound for valid GT pixels; <=0 disables the bound')
+    parser.add_argument(
+        '--eval_disp_thresholds',
+        type=float,
+        nargs='+',
+        default=None,
+        help=(
+            'nested FlyingThings GT upper bounds evaluated in one inference '
+            'pass, for example: 192 384 512 768'
+        ),
+    )
     parser.add_argument('--pact_debug_finite', action='store_true')
     parser.add_argument('--pact_mid_refine_iters', type=int, default=1)
+    parser.add_argument('--pivno_mask_sr_stage', choices=['head', 'joint'], default='head')
+    parser.add_argument('--pivno_mask_sr_residual_max', type=float, default=4.0)
+    parser.add_argument(
+        '--pivno_gru_kernel_size',
+        type=int,
+        choices=[1, 3],
+        default=None,
+        help='outer ConvGRU kernel for the strict C32/GWC4 ablation',
+    )
     parser.add_argument(
         '--pact_smd_stage', choices=['head', 'joint', 'full'], default='joint'
     )
@@ -780,7 +1001,7 @@ if __name__ == '__main__':
                         help='shard evaluation samples across torchrun processes')
 
     args = parser.parse_args()
-    pact_model = args.model in ('pact', 'pact_smd', 'pact_smd_post', 'pact_bilap_gru', 'pact2', 'pact2_gev', 'pact_pivno', 'defom_pivno', 'defom_pivno_gated')
+    pact_model = args.model in ('pact', 'pact_smd', 'pact_smd_post', 'pact_bilap_gru', 'pact2', 'pact2_gev', 'pact_pivno', 'defom_pivno', 'defom_pivno_mobilenetv2', 'defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr', 'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr', 'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr', 'defom_pivno_gwc4_enc16_concat_gru3', 'defom_pivno_gwc4_enc16_concat_gru3_mask_sr')
     if args.max_disp is None:
         if pact_model:
             parser.error('--max_disp is required for PACT because legacy checkpoints do not store it')
@@ -791,7 +1012,15 @@ if __name__ == '__main__':
     if pact_model and args.restore_ckpt is not None:
         architecture_checkpoint = torch.load(args.restore_ckpt, map_location='cpu')
         if isinstance(architecture_checkpoint, dict):
-            if args.model in ('pact_pivno', 'defom_pivno', 'defom_pivno_gated'):
+            if args.model in (
+                'defom_pivno_gated_gru_kernel_ablation',
+                'defom_pivno_gated_gru3_gwc4_mask_sr',
+                'defom_pivno_gated_gru3_gwc4_mask_rgb_sr',
+                'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr',
+                'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr',
+                'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr',
+                'defom_pivno_gwc4_enc16_concat_gru3_mask_sr',
+            ):
                 args.pivno_input_channels = _infer_pivno_input_channels(
                     architecture_checkpoint
                 )
@@ -804,6 +1033,20 @@ if __name__ == '__main__':
                 ]
                 if args.model == 'pact2_gev':
                     restore_fields.append(('pact_gev_mode', 'dual'))
+                if args.model in (
+                    'defom_pivno_gated_gru3_gwc4_mask_sr',
+                    'defom_pivno_gated_gru3_gwc4_mask_rgb_sr',
+                    'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr',
+                    'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr',
+                    'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr',
+                    'defom_pivno_gwc4_enc16_concat_gru3_mask_sr',
+                ):
+                    restore_fields.extend([
+                        ('pivno_mask_sr_stage', 'head'),
+                        ('pivno_mask_sr_residual_max', 4.0),
+                    ])
+                if args.model == 'defom_pivno_gated_gru_kernel_ablation':
+                    restore_fields.append(('pivno_gru_kernel_size', None))
                 if args.model in ('pact', 'pact_smd', 'pact_smd_post', 'pact_bilap_gru'):
                     restore_fields.extend([
                         ('pact_min_radius', 1.0),
@@ -874,6 +1117,28 @@ if __name__ == '__main__':
         model_cls = PACTPIVNODEFOMStereo
     elif args.model == 'defom_pivno':
         model_cls = PIVNODEFOMStereo
+    elif args.model == 'defom_pivno_mobilenetv2':
+        model_cls = MobileNetV2PIVNODEFOMStereo
+    elif args.model == 'defom_pivno_gwc4_enc16_concat_gru3':
+        model_cls = GWC4Enc16ConcatGRU3PIVNODEFOMStereo
+    elif args.model == 'defom_pivno_gwc4_enc16_concat_gru3_mask_sr':
+        model_cls = GWC4Enc16ConcatGRU3MaskSRPIVNODEFOMStereo
+    elif args.model == 'defom_pivno_gated_gru3_gwc4_mask_sr':
+        model_cls = GatedGRU3GWC4MaskSRPIVNODEFOMStereo
+    elif args.model == 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr':
+        model_cls = GatedGRU3GWC4MaskRGBSRPIVNODEFOMStereo
+    elif args.model == 'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr':
+        model_cls = GatedGRU3GWC4MaskRGBHiddenSRPIVNODEFOMStereo
+    elif args.model == 'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr':
+        model_cls = GatedGRU3GWC4MaskLastDeltaSRPIVNODEFOMStereo
+    elif args.model == 'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr':
+        model_cls = GatedGRU3GWC4LastDeltaDirectSRPIVNODEFOMStereo
+    elif args.model == 'defom_pivno_gated_gru1':
+        model_cls = GatedGRU1PIVNODEFOMStereo
+    elif args.model == 'defom_pivno_gated_gru_kernel_ablation':
+        model_cls = GatedGRUKernelAblationPIVNODEFOMStereo
+    elif args.model == 'defom_pivno_gated_gru3':
+        model_cls = GatedGRU3PIVNODEFOMStereo
     elif args.model == 'defom_pivno_gated':
         model_cls = GatedPIVNODEFOMStereo
     else:
@@ -915,6 +1180,11 @@ if __name__ == '__main__':
                     "legacy anchor checkpoints are not compatible"
                 )
             config = checkpoint['model_config']
+            legacy_gru3_for_kernel_ablation = (
+                args.model == 'defom_pivno_gated_gru_kernel_ablation'
+                and config.get('model') == 'defom_pivno_gated_gru3'
+                and int(model.GRU_KERNEL_SIZE) == 3
+            )
             checkpoint_max_disp = config.get('max_disp')
             requested_max_disp = int(args.max_disp)
             if checkpoint_max_disp != requested_max_disp:
@@ -930,19 +1200,152 @@ if __name__ == '__main__':
                 'n_gru_layers': int(args.n_gru_layers),
                 'hidden_dims': list(args.hidden_dims),
             }
-            if args.model in ('pact_pivno', 'defom_pivno', 'defom_pivno_gated'):
+            if args.model in ('pact_pivno', 'defom_pivno', 'defom_pivno_mobilenetv2', 'defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr', 'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr', 'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr', 'defom_pivno_gwc4_enc16_concat_gru3', 'defom_pivno_gwc4_enc16_concat_gru3_mask_sr'):
                 expected.update({
-                    'model': args.model,
-                    'model_variant': args.model,
+                    'model': (
+                        'defom_pivno_gated_gru3'
+                        if legacy_gru3_for_kernel_ablation
+                        else args.model
+                    ),
+                    'model_variant': (
+                        'defom_pivno_gated_gru3'
+                        if legacy_gru3_for_kernel_ablation
+                        else args.model
+                    ),
                     'state_mode': 'pivno_single_current_disp',
                 })
-                if args.model == 'defom_pivno_gated':
+                if args.model in ('defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr', 'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr', 'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr'):
                     expected['pivno_scale_gate'] = model_cls.SCALE_GATE_MODE
                     expected['corr_radius'] = int(args.corr_radius)
+                if args.model in (
+                    'defom_pivno_gated_gru1',
+                    'defom_pivno_gated_gru3',
+                    'defom_pivno_gated_gru_kernel_ablation',
+                    'defom_pivno_gated_gru3_gwc4_mask_sr',
+                    'defom_pivno_gated_gru3_gwc4_mask_rgb_sr',
+                    'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr',
+                    'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr',
+                    'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr',
+                ):
+                    expected.update({
+                        'pivno_gru_kernel_size': int(
+                            model.GRU_KERNEL_SIZE
+                        ),
+                        'pivno_right_sample_encoding': (
+                            model_cls.RIGHT_SAMPLE_ENCODING
+                        ),
+                        'pivno_match_num_groups': int(
+                            model_cls.MATCH_NUM_GROUPS
+                        ),
+                        'pivno_match_encoded_channels': int(
+                            model_cls.MATCH_ENCODED_CHANNELS
+                        ),
+                    })
+                    if (
+                        args.model == 'defom_pivno_gated_gru_kernel_ablation'
+                        and not legacy_gru3_for_kernel_ablation
+                    ):
+                        expected['pivno_low_feature_dim'] = int(
+                            model.LOW_FEATURE_DIM
+                        )
+                if args.model in (
+                    'defom_pivno_gwc4_enc16_concat_gru3',
+                    'defom_pivno_gwc4_enc16_concat_gru3_mask_sr',
+                ):
+                    expected.update({
+                        'pivno_gru_kernel_size': 3,
+                        'pivno_right_sample_encoding': (
+                            model_cls.RIGHT_SAMPLE_ENCODING
+                        ),
+                        'pivno_match_num_groups': int(
+                            model_cls.MATCH_NUM_GROUPS
+                        ),
+                        'pivno_match_encoded_channels': int(
+                            model_cls.MATCH_ENCODED_CHANNELS
+                        ),
+                        'pivno_fusion_mode': model_cls.FUSION_MODE,
+                        'pivno_low_feature_dim': int(
+                            model_cls.LOW_FEATURE_DIM
+                        ),
+                        'pivno_scale_gate': 'none',
+                    })
                 if 'pivno_input_channels' in config:
                     expected['pivno_input_channels'] = int(
                         args.pivno_input_channels
                     )
+                if args.model == 'defom_pivno_mobilenetv2':
+                    expected.update({
+                        'feature_backbone': model_cls.FEATURE_BACKBONE,
+                        'pivno_feature_encoder': model_cls.FEATURE_BACKBONE,
+                        'pivno_imagenet_pretrained': False,
+                    })
+                if args.model in (
+                    'defom_pivno_gated_gru3_gwc4_mask_sr',
+                    'defom_pivno_gated_gru3_gwc4_mask_rgb_sr',
+                    'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr',
+                    'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr',
+                    'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr',
+                    'defom_pivno_gwc4_enc16_concat_gru3_mask_sr',
+                ):
+                    expected.update({
+                        'model_variant': model_cls.MODEL_VARIANT,
+                        'pivno_mask_sr_base_model': (
+                            model_cls.BASE_MODEL_VARIANT
+                        ),
+                        'pivno_mask_sr_final_only': True,
+                        'pivno_mask_sr_feature_channels': int(
+                            model.sr_head.FEATURE_CHANNELS
+                        ),
+                        'pivno_mask_sr_input_channels': int(
+                            model.sr_head.INPUT_CHANNELS
+                        ),
+                        'pivno_mask_sr_residual_max': float(
+                            model.sr_head.residual_max
+                        ),
+                    })
+                    if args.model in (
+                        'defom_pivno_gated_gru3_gwc4_mask_rgb_sr',
+                        'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr',
+                        'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr',
+                        'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr',
+                    ):
+                        expected['pivno_mask_sr_feature_source'] = (
+                            model.sr_head.FEATURE_SOURCE
+                        )
+                    if args.model == 'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr':
+                        expected.update({
+                            'pivno_mask_sr_output': model.sr_head.OUTPUT_MODE,
+                            'pivno_mask_sr_weight_mode': model.sr_head.WEIGHT_MODE,
+                            'pivno_mask_sr_max_delta_disp_low': float(
+                                model.sr_head.max_delta_disp_low
+                            ),
+                        })
+                    if args.model == 'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr':
+                        expected.update({
+                            'pivno_mask_sr_output': model.sr_head.OUTPUT_MODE,
+                            'pivno_mask_sr_upsample_mode': (
+                                model.sr_head.UPSAMPLE_MODE
+                            ),
+                            'pivno_mask_sr_max_delta_disp_low': float(
+                                model.sr_head.max_delta_disp_low
+                            ),
+                            'pivno_mask_sr_max_delta_disp_hr': float(
+                                model.sr_head.max_delta_disp_hr
+                            ),
+                            'pivno_mask_sr_final_composition': (
+                                'previous_iteration_upsampled_disp_plus_direct_delta'
+                            ),
+                        })
+                    if args.model in (
+                        'defom_pivno_gated_gru3_gwc4_mask_sr',
+                        'defom_pivno_gated_gru3_gwc4_mask_rgb_sr',
+                        'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr',
+                        'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr',
+                        'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr',
+                    ):
+                        expected['pivno_low_feature_dim'] = int(
+                            model_cls.LOW_FEATURE_DIM
+                        )
             elif args.model in ('pact2', 'pact2_gev'):
                 expected['dinov2_encoder'] = args.dinov2_encoder
                 expected['state_mode'] = 'single_current_disp'
@@ -1045,6 +1448,36 @@ if __name__ == '__main__':
                 raise ValueError(
                     f"checkpoint/model configuration mismatch: {mismatches}"
                 )
+            if legacy_gru3_for_kernel_ablation:
+                checkpoint_state = _checkpoint_model_state(checkpoint)
+                required_shapes = {
+                    'low_channel.weight': (32, 64, 1, 1),
+                    'sample_match_encoder.0.weight': (16, 36, 1, 1),
+                    'update_block.gru08.convz.weight': (128, 384, 3, 3),
+                    'scale_gate.0.weight': (32, 59, 3, 3),
+                }
+                shape_mismatches = {
+                    key: (
+                        None
+                        if key not in checkpoint_state
+                        else tuple(checkpoint_state[key].shape),
+                        expected_shape,
+                    )
+                    for key, expected_shape in required_shapes.items()
+                    if (
+                        key not in checkpoint_state
+                        or tuple(checkpoint_state[key].shape) != expected_shape
+                    )
+                }
+                if shape_mismatches:
+                    raise ValueError(
+                        'legacy GRU3 checkpoint is not the completed '
+                        f'C32/GWC4/enc16 model: {shape_mismatches}'
+                    )
+                logging.info(
+                    'Using strict C32/GWC4 kernel=3 compatibility model for '
+                    'legacy defom_pivno_gated_gru3 checkpoint'
+                )
         if 'model' in checkpoint:
             model.load_state_dict(checkpoint['model'])
         else:
@@ -1066,14 +1499,24 @@ if __name__ == '__main__':
     )
 
     if 'things' in args.datasets:
-        validate_things(
-            model,
-            iters=args.valid_iters,
-            scale_iters=args.scale_iters,
-            mixed_prec=use_mixed_precision,
-            max_disp=args.eval_max_disp if args.eval_max_disp > 0 else args.max_disp,
-            batch_size=args.eval_batch_size,
-        )
+        if args.eval_disp_thresholds is not None:
+            validate_things_disparity_thresholds(
+                model,
+                thresholds=args.eval_disp_thresholds,
+                iters=args.valid_iters,
+                scale_iters=args.scale_iters,
+                mixed_prec=use_mixed_precision,
+                batch_size=args.eval_batch_size,
+            )
+        else:
+            validate_things(
+                model,
+                iters=args.valid_iters,
+                scale_iters=args.scale_iters,
+                mixed_prec=use_mixed_precision,
+                max_disp=args.eval_max_disp if args.eval_max_disp > 0 else args.max_disp,
+                batch_size=args.eval_batch_size,
+            )
 
     if 'eth3d' in args.datasets:
         validate_eth3d(model, iters=args.valid_iters, scale_iters=args.scale_iters, mixed_prec=use_mixed_precision)

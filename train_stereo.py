@@ -30,7 +30,18 @@ from core.defom_pact2 import DEFOMStereo as PACT2DEFOMStereo
 from core.defom_pact2_gev import DEFOMStereo as PACT2GEVDEFOMStereo
 from core.pivno_models.defom_pact_pivno import DEFOMStereo as PACTPIVNODEFOMStereo
 from core.pivno_models.defom_pivno import DEFOMStereo as PIVNODEFOMStereo
+from core.pivno_models.defom_pivno_mobilenetv2 import DEFOMStereo as MobileNetV2PIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated import DEFOMStereo as GatedPIVNODEFOMStereo
+from core.pivno_models.defom_pivno_gated_gru1 import DEFOMStereo as GatedGRU1PIVNODEFOMStereo
+from core.pivno_models.defom_pivno_gated_gru3 import DEFOMStereo as GatedGRU3PIVNODEFOMStereo
+from core.pivno_models.defom_pivno_gated_gru_kernel_ablation import DEFOMStereo as GatedGRUKernelAblationPIVNODEFOMStereo
+from core.pivno_models.defom_pivno_gated_gru3_gwc4_mask_sr import DEFOMStereo as GatedGRU3GWC4MaskSRPIVNODEFOMStereo
+from core.pivno_models.defom_pivno_gated_gru3_gwc4_mask_rgb_sr import DEFOMStereo as GatedGRU3GWC4MaskRGBSRPIVNODEFOMStereo
+from core.pivno_models.defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr import DEFOMStereo as GatedGRU3GWC4MaskRGBHiddenSRPIVNODEFOMStereo
+from core.pivno_models.defom_pivno_gated_gru3_gwc4_mask_last_delta_sr import DEFOMStereo as GatedGRU3GWC4MaskLastDeltaSRPIVNODEFOMStereo
+from core.pivno_models.defom_pivno_gated_gru3_gwc4_last_delta_direct_sr import DEFOMStereo as GatedGRU3GWC4LastDeltaDirectSRPIVNODEFOMStereo
+from core.pivno_models.defom_pivno_gwc4_enc16_concat_gru3 import DEFOMStereo as GWC4Enc16ConcatGRU3PIVNODEFOMStereo
+from core.pivno_models.defom_pivno_gwc4_enc16_concat_gru3_mask_sr import DEFOMStereo as GWC4Enc16ConcatGRU3MaskSRPIVNODEFOMStereo
 try:
     from core.defom_low_reso_volume import DEFOMStereo as LegacyDEFOMStereo
 except ModuleNotFoundError:
@@ -56,6 +67,33 @@ except:
             optimizer.step()
         def update(self):
             pass
+
+
+def _infer_pivno_input_channels(checkpoint):
+    """Infer legacy PIVNO RGB/grayscale input width from metadata or weights."""
+    config = checkpoint.get('model_config', {}) if isinstance(checkpoint, dict) else {}
+    if isinstance(config, dict) and 'pivno_input_channels' in config:
+        channels = int(config['pivno_input_channels'])
+    else:
+        state = checkpoint.get('model', checkpoint) if isinstance(checkpoint, dict) else checkpoint
+        key = next(
+            (
+                name for name in state
+                if name.endswith('pivno.snet.conv1.weight')
+            ),
+            None,
+        )
+        if key is None:
+            raise ValueError(
+                'cannot infer PIVNO input channels: missing '
+                'pivno.snet.conv1.weight'
+            )
+        channels = int(state[key].shape[1])
+    if channels not in (1, 3):
+        raise ValueError(
+            f'PIVNO checkpoint input channels must be 1 or 3, got {channels}'
+        )
+    return channels
 
 
 class OffsetBatchSampler:
@@ -84,8 +122,75 @@ def train(args):
     use_pact_smd_post = model_name == 'pact_smd_post'
     use_pact_bilap = model_name == 'pact_bilap_gru'
     use_pact_pivno = model_name == 'pact_pivno'
-    use_gated_pivno = model_name == 'defom_pivno_gated'
-    use_defom_pivno = model_name in ('defom_pivno', 'defom_pivno_gated')
+    use_mobilenetv2_pivno = model_name == 'defom_pivno_mobilenetv2'
+    use_concat_gru3_mask_sr = (
+        model_name == 'defom_pivno_gwc4_enc16_concat_gru3_mask_sr'
+    )
+    use_gated_gru3_mask_sr = (
+        model_name == 'defom_pivno_gated_gru3_gwc4_mask_sr'
+    )
+    use_gated_gru3_mask_rgb_sr = (
+        model_name == 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr'
+    )
+    use_gated_gru3_mask_rgb_hidden_sr = (
+        model_name == 'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr'
+    )
+    use_gated_gru3_mask_last_delta_sr = (
+        model_name == 'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr'
+    )
+    use_gated_gru3_last_delta_direct_sr = (
+        model_name == 'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr'
+    )
+    use_gated_gru3_sr = (
+        use_gated_gru3_mask_sr
+        or use_gated_gru3_mask_rgb_sr
+        or use_gated_gru3_mask_rgb_hidden_sr
+        or use_gated_gru3_mask_last_delta_sr
+        or use_gated_gru3_last_delta_direct_sr
+    )
+    use_mask_sr = use_concat_gru3_mask_sr or use_gated_gru3_sr
+    use_gated_gru3_pivno = model_name == 'defom_pivno_gated_gru3'
+    use_gated_gru1_pivno = model_name == 'defom_pivno_gated_gru1'
+    use_gated_gru_kernel_ablation = (
+        model_name == 'defom_pivno_gated_gru_kernel_ablation'
+    )
+    use_gated_gru3_family = (
+        use_gated_gru3_pivno or use_gated_gru3_sr
+    )
+    use_concat_gru3_pivno = (
+        model_name == 'defom_pivno_gwc4_enc16_concat_gru3'
+    )
+    use_concat_gru3_family = (
+        use_concat_gru3_pivno or use_concat_gru3_mask_sr
+    )
+    use_encoded_gru_pivno = (
+        use_gated_gru1_pivno
+        or use_gated_gru_kernel_ablation
+        or use_gated_gru3_family
+        or use_concat_gru3_family
+    )
+    use_gated_pivno = model_name in (
+        'defom_pivno_gated',
+        'defom_pivno_gated_gru1',
+        'defom_pivno_gated_gru3',
+        'defom_pivno_gated_gru_kernel_ablation',
+    )
+    use_scale_gate_pivno = use_gated_pivno or use_gated_gru3_sr
+    use_defom_pivno = model_name in (
+        'defom_pivno',
+        'defom_pivno_mobilenetv2',
+        'defom_pivno_gated',
+        'defom_pivno_gated_gru1',
+        'defom_pivno_gated_gru3',
+        'defom_pivno_gated_gru_kernel_ablation',
+        'defom_pivno_gwc4_enc16_concat_gru3',
+        'defom_pivno_gwc4_enc16_concat_gru3_mask_sr',
+        'defom_pivno_gated_gru3_gwc4_mask_sr',
+        'defom_pivno_gated_gru3_gwc4_mask_rgb_sr',
+        'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr',
+        'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr',
+        'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr',
+    )
     use_pivno = use_pact_pivno or use_defom_pivno
     use_pact = model_name in ('pact', 'pact_smd', 'pact_smd_post', 'pact_bilap_gru', 'pact2', 'pact2_gev')
     use_pact2_gev = model_name == 'pact2_gev'
@@ -155,8 +260,30 @@ def train(args):
         model_cls = PACT2DEFOMStereo
     elif use_pact:
         model_cls = PACTDEFOMStereo
+    elif use_gated_gru3_last_delta_direct_sr:
+        model_cls = GatedGRU3GWC4LastDeltaDirectSRPIVNODEFOMStereo
+    elif use_gated_gru3_mask_last_delta_sr:
+        model_cls = GatedGRU3GWC4MaskLastDeltaSRPIVNODEFOMStereo
+    elif use_gated_gru3_mask_rgb_hidden_sr:
+        model_cls = GatedGRU3GWC4MaskRGBHiddenSRPIVNODEFOMStereo
+    elif use_gated_gru3_mask_rgb_sr:
+        model_cls = GatedGRU3GWC4MaskRGBSRPIVNODEFOMStereo
+    elif use_gated_gru3_mask_sr:
+        model_cls = GatedGRU3GWC4MaskSRPIVNODEFOMStereo
+    elif use_concat_gru3_mask_sr:
+        model_cls = GWC4Enc16ConcatGRU3MaskSRPIVNODEFOMStereo
+    elif use_concat_gru3_pivno:
+        model_cls = GWC4Enc16ConcatGRU3PIVNODEFOMStereo
+    elif use_gated_gru1_pivno:
+        model_cls = GatedGRU1PIVNODEFOMStereo
+    elif use_gated_gru_kernel_ablation:
+        model_cls = GatedGRUKernelAblationPIVNODEFOMStereo
+    elif use_gated_gru3_pivno:
+        model_cls = GatedGRU3PIVNODEFOMStereo
     elif use_gated_pivno:
         model_cls = GatedPIVNODEFOMStereo
+    elif use_mobilenetv2_pivno:
+        model_cls = MobileNetV2PIVNODEFOMStereo
     elif use_defom_pivno:
         model_cls = PIVNODEFOMStereo
     elif use_pact_pivno:
@@ -177,7 +304,8 @@ def train(args):
             else 'pact1' if use_pact else model_name if use_pivno else 'legacy'
         ),
         'feature_backbone': (
-            model_cls.FEATURE_BACKBONE if use_pact2 else None
+            model_cls.FEATURE_BACKBONE
+            if (use_pact2 or use_mobilenetv2_pivno) else None
         ),
         'dinov2_encoder': args.dinov2_encoder,
         'idepth_scale': float(args.idepth_scale),
@@ -266,7 +394,73 @@ def train(args):
             'pivno_input_channels': int(model.pivno.input_channels),
             'pivno_input_range': 'rgb_0_1',
         })
-        if use_gated_pivno:
+        if use_mobilenetv2_pivno:
+            model_config.update({
+                'pivno_feature_encoder': model_cls.FEATURE_BACKBONE,
+                'pivno_imagenet_pretrained': False,
+            })
+        if use_mask_sr:
+            model_config.update({
+                'model_variant': model.MODEL_VARIANT,
+                'pivno_mask_sr_base_model': model.BASE_MODEL_VARIANT,
+                'pivno_mask_sr_stage': model.sr_stage,
+                'pivno_mask_sr_final_only': True,
+                'pivno_mask_sr_feature_channels': int(
+                    model.sr_head.FEATURE_CHANNELS
+                ),
+                'pivno_mask_sr_input_channels': int(
+                    model.sr_head.INPUT_CHANNELS
+                ),
+                'pivno_mask_sr_residual_max': float(
+                    model.sr_head.residual_max
+                ),
+                'pivno_mask_sr_output': (
+                    model.sr_head.OUTPUT_MODE
+                    if (
+                        use_gated_gru3_mask_last_delta_sr
+                        or use_gated_gru3_last_delta_direct_sr
+                    )
+                    else 'bounded_full_resolution_delta_d'
+                ),
+            })
+            if (
+                use_gated_gru3_mask_rgb_sr
+                or use_gated_gru3_mask_rgb_hidden_sr
+                or use_gated_gru3_mask_last_delta_sr
+                or use_gated_gru3_last_delta_direct_sr
+            ):
+                model_config['pivno_mask_sr_feature_source'] = (
+                    model.sr_head.FEATURE_SOURCE
+                )
+            if use_gated_gru3_mask_last_delta_sr:
+                model_config.update({
+                    'pivno_mask_sr_weight_mode': model.sr_head.WEIGHT_MODE,
+                    'pivno_mask_sr_max_delta_disp_low': float(
+                        model.sr_head.max_delta_disp_low
+                    ),
+                })
+            if use_gated_gru3_last_delta_direct_sr:
+                model_config.update({
+                    'pivno_mask_sr_upsample_mode': model.sr_head.UPSAMPLE_MODE,
+                    'pivno_mask_sr_max_delta_disp_low': float(
+                        model.sr_head.max_delta_disp_low
+                    ),
+                    'pivno_mask_sr_max_delta_disp_hr': float(
+                        model.sr_head.max_delta_disp_hr
+                    ),
+                    'pivno_mask_sr_final_composition': (
+                        'previous_iteration_upsampled_disp_plus_direct_delta'
+                    ),
+                })
+            if use_gated_gru3_mask_rgb_hidden_sr:
+                pretrained_lr = getattr(
+                    args, 'pivno_mask_sr_pretrained_lr', None
+                )
+                model_config['pivno_mask_sr_pretrained_lr'] = float(
+                    0.1 * args.lr if pretrained_lr is None
+                    else pretrained_lr
+                )
+        if use_scale_gate_pivno:
             model_config.update({
                 'pivno_scale_gate': model.SCALE_GATE_MODE,
                 'pivno_scale_gate_identity_init': True,
@@ -277,6 +471,32 @@ def train(args):
                     else args.pivno_gate_lr
                 ),
             })
+        if use_encoded_gru_pivno:
+            model_config.update({
+                'pivno_gru_kernel_size': int(model.GRU_KERNEL_SIZE),
+                'pivno_right_sample_encoding': (
+                    model.RIGHT_SAMPLE_ENCODING
+                ),
+                'pivno_match_num_groups': int(model.MATCH_NUM_GROUPS),
+                'pivno_match_encoded_channels': int(
+                    model.MATCH_ENCODED_CHANNELS
+                ),
+                'pivno_amp_policy': model.AMP_POLICY,
+            })
+        if use_gated_gru_kernel_ablation:
+            model_config['pivno_low_feature_dim'] = int(
+                model.LOW_FEATURE_DIM
+            )
+        if use_concat_gru3_family:
+            model_config.update({
+                'pivno_fusion_mode': model.FUSION_MODE,
+                'pivno_low_feature_dim': int(model.LOW_FEATURE_DIM),
+                'pivno_scale_gate': 'none',
+            })
+        if use_gated_gru3_sr:
+            model_config['pivno_low_feature_dim'] = int(
+                model.LOW_FEATURE_DIM
+            )
     print("Parameter Count: %d, Trainable: %d" % count_parameters(model))
     if use_pact_smd_post:
         trainable_names = [
@@ -295,6 +515,25 @@ def train(args):
         logging.info(
             'PACT-SMD-post frozen training contract: %d trainable tensors, '
             'all under final_smd_head',
+            len(trainable_names),
+        )
+    if use_mask_sr and model.sr_stage == 'head':
+        trainable_names = [
+            name for name, parameter in model.named_parameters()
+            if parameter.requires_grad
+        ]
+        invalid_trainable = [
+            name for name in trainable_names
+            if not name.startswith('sr_head.')
+        ]
+        if not trainable_names or invalid_trainable:
+            raise ValueError(
+                'PIVNO-mask-SR head stage must train only sr_head; '
+                f'trainable={trainable_names}'
+            )
+        logging.info(
+            'PIVNO-mask-SR frozen training contract: %d trainable '
+            'tensors, all under sr_head',
             len(trainable_names),
         )
 
@@ -508,22 +747,345 @@ def train(args):
                     "Start a new training run instead of resuming it."
                 )
         checkpoint_state = checkpoint['model'] if 'model' in checkpoint else checkpoint
+        checkpoint_model_for_sr = (
+            checkpoint.get('model_config', {}).get('model')
+            if isinstance(checkpoint, dict) else None
+        )
+        if (
+            use_gated_gru1_pivno
+            and checkpoint_model_for_sr != model_name
+        ):
+            raise ValueError(
+                f'{model_name} can resume only its own 1x1-GRU checkpoint, '
+                f'got {checkpoint_model_for_sr!r}. A GRU3 checkpoint has '
+                'incompatible 3x3 gate weights.'
+            )
+        if use_gated_gru_kernel_ablation:
+            checkpoint_config = (
+                checkpoint.get('model_config', {})
+                if isinstance(checkpoint, dict) else {}
+            )
+            checkpoint_model = checkpoint_config.get('model')
+            checkpoint_kernel = checkpoint_config.get(
+                'pivno_gru_kernel_size'
+            )
+            expected_kernel = int(model_without_ddp.GRU_KERNEL_SIZE)
+            if (
+                checkpoint_model != model_name
+                or checkpoint_kernel != expected_kernel
+            ):
+                raise ValueError(
+                    f'{model_name} kernel={expected_kernel} can resume only '
+                    'its own matching-kernel checkpoint, got '
+                    f'model={checkpoint_model!r}, '
+                    f'kernel={checkpoint_kernel!r}'
+                )
+        sr_from_base_concat_gru3 = (
+            use_concat_gru3_mask_sr
+            and checkpoint_model_for_sr
+            == 'defom_pivno_gwc4_enc16_concat_gru3'
+        )
+        sr_from_base_gated_gru3 = (
+            use_gated_gru3_sr
+            and checkpoint_model_for_sr == 'defom_pivno_gated_gru3'
+        )
+        fusion_from_hidden_sr = (
+            use_gated_gru3_mask_rgb_hidden_sr
+            and checkpoint_model_for_sr
+            == 'defom_pivno_gated_gru3_gwc4_mask_sr'
+        )
+        concat_from_gated_gru3 = (
+            use_concat_gru3_pivno
+            and isinstance(checkpoint, dict)
+            and checkpoint.get('model_config', {}).get('model')
+            == 'defom_pivno_gated_gru3'
+        )
         load_strict = args.strict_resume and not (
             use_pact_smd_post and post_source_model == 'pact_smd'
-        )
+        ) and not concat_from_gated_gru3 \
+            and not sr_from_base_concat_gru3 \
+            and not sr_from_base_gated_gru3 \
+            and not fusion_from_hidden_sr
         incompatible = model_without_ddp.load_state_dict(
             checkpoint_state, strict=load_strict
         )
+        if use_concat_gru3_mask_sr:
+            checkpoint_config = (
+                checkpoint.get('model_config', {})
+                if isinstance(checkpoint, dict) else {}
+            )
+            checkpoint_model = checkpoint_config.get('model')
+            base_model_name = 'defom_pivno_gwc4_enc16_concat_gru3'
+            if checkpoint_model not in (base_model_name, model_name):
+                raise ValueError(
+                    f'{model_name} can initialize only from {base_model_name} '
+                    f'or resume itself, got {checkpoint_model!r}'
+                )
+            expected_shared = {
+                'max_disp': int(args.max_disp),
+                'n_downsample': int(args.n_downsample),
+                'n_gru_layers': int(args.n_gru_layers),
+                'hidden_dims': list(args.hidden_dims),
+                'pivno_input_channels': 3,
+                'pivno_gru_kernel_size': int(
+                    model_without_ddp.GRU_KERNEL_SIZE
+                ),
+                'pivno_right_sample_encoding': (
+                    model_without_ddp.RIGHT_SAMPLE_ENCODING
+                ),
+                'pivno_match_num_groups': int(
+                    model_without_ddp.MATCH_NUM_GROUPS
+                ),
+                'pivno_match_encoded_channels': int(
+                    model_without_ddp.MATCH_ENCODED_CHANNELS
+                ),
+                'pivno_fusion_mode': model_without_ddp.FUSION_MODE,
+                'pivno_low_feature_dim': int(
+                    model_without_ddp.LOW_FEATURE_DIM
+                ),
+                'pivno_scale_gate': 'none',
+            }
+            observed_shared = dict(checkpoint_config)
+            observed_shared['pivno_input_channels'] = (
+                _infer_pivno_input_channels(checkpoint)
+            )
+            mismatches = {
+                key: (observed_shared.get(key), expected)
+                for key, expected in expected_shared.items()
+                if observed_shared.get(key) != expected
+            }
+            if checkpoint_model == model_name:
+                expected_sr = {
+                    'model_variant': model_without_ddp.MODEL_VARIANT,
+                    'pivno_mask_sr_base_model': (
+                        model_without_ddp.BASE_MODEL_VARIANT
+                    ),
+                    'pivno_mask_sr_final_only': True,
+                    'pivno_mask_sr_feature_channels': int(
+                        model_without_ddp.sr_head.FEATURE_CHANNELS
+                    ),
+                    'pivno_mask_sr_input_channels': int(
+                        model_without_ddp.sr_head.INPUT_CHANNELS
+                    ),
+                    'pivno_mask_sr_residual_max': float(
+                        model_without_ddp.sr_head.residual_max
+                    ),
+                }
+                mismatches.update({
+                    key: (checkpoint_config.get(key), expected)
+                    for key, expected in expected_sr.items()
+                    if checkpoint_config.get(key) != expected
+                })
+            if mismatches:
+                raise ValueError(
+                    'GWC4/enc16/GRU3-mask-SR checkpoint/config mismatch: '
+                    f'{mismatches}'
+                )
+            if checkpoint_model == base_model_name:
+                expected_missing = {
+                    key for key in model_without_ddp.state_dict()
+                    if key.startswith('sr_head.')
+                }
+                if (
+                    set(incompatible.missing_keys) != expected_missing
+                    or incompatible.unexpected_keys
+                ):
+                    raise ValueError(
+                        'GWC4/enc16/GRU3-mask-SR base initialization mismatch: '
+                        f'missing={incompatible.missing_keys}, '
+                        f'unexpected={incompatible.unexpected_keys}'
+                    )
+                logging.info(
+                    'Loaded all GWC4/enc16/direct-concat/GRU3 base weights; '
+                    'initialized only '
+                    'the zero-output sr_head'
+                )
+            elif incompatible.missing_keys or incompatible.unexpected_keys:
+                raise ValueError(
+                    'GWC4/enc16/GRU3-mask-SR resume requires an exact state: '
+                    f'missing={incompatible.missing_keys}, '
+                    f'unexpected={incompatible.unexpected_keys}'
+                )
+        if use_gated_gru3_sr:
+            checkpoint_config = (
+                checkpoint.get('model_config', {})
+                if isinstance(checkpoint, dict) else {}
+            )
+            checkpoint_model = checkpoint_config.get('model')
+            base_model_name = 'defom_pivno_gated_gru3'
+            compatible_source_models = [base_model_name, model_name]
+            if use_gated_gru3_mask_rgb_hidden_sr:
+                compatible_source_models.append(
+                    'defom_pivno_gated_gru3_gwc4_mask_sr'
+                )
+            if checkpoint_model not in compatible_source_models:
+                raise ValueError(
+                    f'{model_name} can initialize only from '
+                    f'{compatible_source_models}, got {checkpoint_model!r}'
+                )
+            expected_shared = {
+                'max_disp': int(args.max_disp),
+                'n_downsample': int(args.n_downsample),
+                'n_gru_layers': int(args.n_gru_layers),
+                'hidden_dims': list(args.hidden_dims),
+                'pivno_input_channels': 3,
+                'pivno_scale_gate': model_without_ddp.SCALE_GATE_MODE,
+                'corr_radius': int(args.corr_radius),
+                'pivno_gru_kernel_size': int(
+                    model_without_ddp.GRU_KERNEL_SIZE
+                ),
+                'pivno_right_sample_encoding': (
+                    model_without_ddp.RIGHT_SAMPLE_ENCODING
+                ),
+                'pivno_match_num_groups': int(
+                    model_without_ddp.MATCH_NUM_GROUPS
+                ),
+                'pivno_match_encoded_channels': int(
+                    model_without_ddp.MATCH_ENCODED_CHANNELS
+                ),
+            }
+            observed_shared = dict(checkpoint_config)
+            observed_shared['pivno_input_channels'] = (
+                _infer_pivno_input_channels(checkpoint)
+            )
+            mismatches = {
+                key: (observed_shared.get(key), expected)
+                for key, expected in expected_shared.items()
+                if observed_shared.get(key) != expected
+            }
+            if checkpoint_model == model_name:
+                expected_sr = {
+                    'model_variant': model_without_ddp.MODEL_VARIANT,
+                    'pivno_low_feature_dim': int(
+                        model_without_ddp.LOW_FEATURE_DIM
+                    ),
+                    'pivno_mask_sr_base_model': (
+                        model_without_ddp.BASE_MODEL_VARIANT
+                    ),
+                    'pivno_mask_sr_final_only': True,
+                    'pivno_mask_sr_feature_channels': int(
+                        model_without_ddp.sr_head.FEATURE_CHANNELS
+                    ),
+                    'pivno_mask_sr_input_channels': int(
+                        model_without_ddp.sr_head.INPUT_CHANNELS
+                    ),
+                    'pivno_mask_sr_residual_max': float(
+                        model_without_ddp.sr_head.residual_max
+                    ),
+                }
+                if (
+                    use_gated_gru3_mask_rgb_sr
+                    or use_gated_gru3_mask_rgb_hidden_sr
+                    or use_gated_gru3_mask_last_delta_sr
+                    or use_gated_gru3_last_delta_direct_sr
+                ):
+                    expected_sr['pivno_mask_sr_feature_source'] = (
+                        model_without_ddp.sr_head.FEATURE_SOURCE
+                    )
+                if use_gated_gru3_mask_last_delta_sr:
+                    expected_sr.update({
+                        'pivno_mask_sr_output': (
+                            model_without_ddp.sr_head.OUTPUT_MODE
+                        ),
+                        'pivno_mask_sr_weight_mode': (
+                            model_without_ddp.sr_head.WEIGHT_MODE
+                        ),
+                        'pivno_mask_sr_max_delta_disp_low': float(
+                            model_without_ddp.sr_head.max_delta_disp_low
+                        ),
+                    })
+                if use_gated_gru3_last_delta_direct_sr:
+                    expected_sr.update({
+                        'pivno_mask_sr_output': (
+                            model_without_ddp.sr_head.OUTPUT_MODE
+                        ),
+                        'pivno_mask_sr_upsample_mode': (
+                            model_without_ddp.sr_head.UPSAMPLE_MODE
+                        ),
+                        'pivno_mask_sr_max_delta_disp_low': float(
+                            model_without_ddp.sr_head.max_delta_disp_low
+                        ),
+                        'pivno_mask_sr_max_delta_disp_hr': float(
+                            model_without_ddp.sr_head.max_delta_disp_hr
+                        ),
+                        'pivno_mask_sr_final_composition': (
+                            'previous_iteration_upsampled_disp_plus_direct_delta'
+                        ),
+                    })
+                mismatches.update({
+                    key: (checkpoint_config.get(key), expected)
+                    for key, expected in expected_sr.items()
+                    if checkpoint_config.get(key) != expected
+                })
+            if mismatches:
+                raise ValueError(
+                    'GWC4 gated-GRU3-mask-SR checkpoint/config mismatch: '
+                    f'{mismatches}'
+                )
+            if checkpoint_model == base_model_name:
+                expected_missing = {
+                    key for key in model_without_ddp.state_dict()
+                    if key.startswith('sr_head.')
+                }
+                if (
+                    set(incompatible.missing_keys) != expected_missing
+                    or incompatible.unexpected_keys
+                ):
+                    raise ValueError(
+                        'GWC4 gated-GRU3-mask-SR base initialization mismatch: '
+                        f'missing={incompatible.missing_keys}, '
+                        f'unexpected={incompatible.unexpected_keys}'
+                    )
+                logging.info(
+                    'Loaded all completed C32/GWC4 gated-GRU3 base weights; '
+                    'initialized only the zero-output sr_head'
+                )
+            elif fusion_from_hidden_sr:
+                expected_missing = {
+                    key for key in model_without_ddp.state_dict()
+                    if key.startswith('sr_head.image_encoder.')
+                    or key.startswith('sr_head.feature_fusion.')
+                }
+                if (
+                    set(incompatible.missing_keys) != expected_missing
+                    or incompatible.unexpected_keys
+                ):
+                    raise ValueError(
+                        'RGB/hidden fusion initialization did not preserve the '
+                        'complete trained hidden-SR state: '
+                        f'missing={incompatible.missing_keys}, '
+                        f'unexpected={incompatible.unexpected_keys}'
+                    )
+                logging.info(
+                    'Loaded the complete trained hidden-SR checkpoint; '
+                    'initialized only identity/zero RGB fusion modules'
+                )
+            elif incompatible.missing_keys or incompatible.unexpected_keys:
+                raise ValueError(
+                    'GWC4 gated-GRU3-mask-SR resume requires an exact state: '
+                    f'missing={incompatible.missing_keys}, '
+                    f'unexpected={incompatible.unexpected_keys}'
+                )
         if use_gated_pivno:
             checkpoint_config = (
                 checkpoint.get('model_config', {})
                 if isinstance(checkpoint, dict) else {}
             )
             checkpoint_model = checkpoint_config.get('model')
-            if checkpoint_model not in ('defom_pivno', 'defom_pivno_gated'):
+            compatible_checkpoint_models = (
+                (model_name,)
+                if (
+                    use_gated_gru1_pivno
+                    or use_gated_gru3_pivno
+                    or use_gated_gru_kernel_ablation
+                )
+                else ('defom_pivno', 'defom_pivno_gated')
+            )
+            if checkpoint_model not in compatible_checkpoint_models:
                 raise ValueError(
-                    'Gated PIVNO can initialize only from defom_pivno or '
-                    f'defom_pivno_gated, got {checkpoint_model!r}'
+                    f'{model_name} cannot initialize from '
+                    f'{checkpoint_model!r}; expected one of '
+                    f'{compatible_checkpoint_models}'
                 )
             expected_shared = {
                 'max_disp': int(args.max_disp),
@@ -532,6 +1094,29 @@ def train(args):
                 'hidden_dims': list(args.hidden_dims),
                 'pivno_input_channels': 3,
             }
+            if (
+                use_gated_gru1_pivno
+                or use_gated_gru3_pivno
+                or use_gated_gru_kernel_ablation
+            ):
+                expected_shared.update({
+                    'pivno_gru_kernel_size': int(
+                        model_without_ddp.GRU_KERNEL_SIZE
+                    ),
+                    'pivno_right_sample_encoding': (
+                        model_without_ddp.RIGHT_SAMPLE_ENCODING
+                    ),
+                    'pivno_match_num_groups': int(
+                        model_without_ddp.MATCH_NUM_GROUPS
+                    ),
+                    'pivno_match_encoded_channels': int(
+                        model_without_ddp.MATCH_ENCODED_CHANNELS
+                    ),
+                })
+                if use_gated_gru_kernel_ablation:
+                    expected_shared['pivno_low_feature_dim'] = int(
+                        model_without_ddp.LOW_FEATURE_DIM
+                    )
             mismatches = {
                 key: (checkpoint_config.get(key), expected)
                 for key, expected in expected_shared.items()
@@ -567,7 +1152,98 @@ def train(args):
                     'gate uniformly'
                 )
             else:
-                logging.info('Resumed complete defom_pivno_gated weights')
+                logging.info('Resumed complete %s weights', model_name)
+        if use_concat_gru3_pivno:
+            checkpoint_config = (
+                checkpoint.get('model_config', {})
+                if isinstance(checkpoint, dict) else {}
+            )
+            checkpoint_model = checkpoint_config.get('model')
+            compatible_checkpoint_models = (
+                model_name,
+                'defom_pivno_gated_gru3',
+            )
+            if checkpoint_model not in compatible_checkpoint_models:
+                raise ValueError(
+                    f'{model_name} cannot initialize from '
+                    f'{checkpoint_model!r}; expected one of '
+                    f'{compatible_checkpoint_models}'
+                )
+            expected_concat = {
+                'state_mode': 'pivno_single_current_disp',
+                'max_disp': int(args.max_disp),
+                'n_downsample': int(args.n_downsample),
+                'n_gru_layers': int(args.n_gru_layers),
+                'hidden_dims': list(args.hidden_dims),
+                'pivno_input_channels': 3,
+                'pivno_gru_kernel_size': 3,
+                'pivno_right_sample_encoding': (
+                    model_without_ddp.RIGHT_SAMPLE_ENCODING
+                ),
+                'pivno_match_num_groups': int(
+                    model_without_ddp.MATCH_NUM_GROUPS
+                ),
+                'pivno_match_encoded_channels': int(
+                    model_without_ddp.MATCH_ENCODED_CHANNELS
+                ),
+            }
+            if checkpoint_model == model_name:
+                expected_concat.update({
+                    'model_variant': model_without_ddp.MODEL_VARIANT,
+                    'pivno_fusion_mode': model_without_ddp.FUSION_MODE,
+                    'pivno_low_feature_dim': int(
+                        model_without_ddp.LOW_FEATURE_DIM
+                    ),
+                    'pivno_scale_gate': 'none',
+                })
+            else:
+                expected_concat['model_variant'] = (
+                    'defom_pivno_gated_gru3'
+                )
+            mismatches = {
+                key: (checkpoint_config.get(key), expected)
+                for key, expected in expected_concat.items()
+                if checkpoint_config.get(key) != expected
+            }
+            if mismatches:
+                raise ValueError(
+                    'Direct-concat PIVNO checkpoint/configuration mismatch: '
+                    f'{mismatches}'
+                )
+            if checkpoint_model == model_name:
+                valid_unexpected = set()
+            else:
+                valid_unexpected = {
+                    key for key in checkpoint_state
+                    if key.startswith('scale_gate.')
+                }
+                expected_gate_keys = {
+                    'scale_gate.0.weight',
+                    'scale_gate.0.bias',
+                    'scale_gate.2.weight',
+                    'scale_gate.2.bias',
+                }
+                if valid_unexpected != expected_gate_keys:
+                    raise ValueError(
+                        'Gated GRU3 initialization has an unexpected scale '
+                        f'gate state: {sorted(valid_unexpected)}'
+                    )
+            if (
+                incompatible.missing_keys
+                or set(incompatible.unexpected_keys) != valid_unexpected
+            ):
+                raise ValueError(
+                    'Direct-concat PIVNO checkpoint state is incompatible: '
+                    f'missing={incompatible.missing_keys}, '
+                    f'unexpected={incompatible.unexpected_keys}'
+                )
+            if checkpoint_model == model_name:
+                logging.info('Resumed complete %s weights', model_name)
+            else:
+                logging.info(
+                    'Loaded all shared GWC4/enc16 GRU3 weights; discarded '
+                    'only scale_gate parameters'
+                )
         if use_pact_bilap and (incompatible.missing_keys or incompatible.unexpected_keys):
             raise ValueError(f'PACT-BiLap-GRU resume requires an exact model state: missing={incompatible.missing_keys}, unexpected={incompatible.unexpected_keys}')
         if use_pact_smd and not args.strict_resume:
@@ -637,8 +1313,15 @@ def train(args):
                 and checkpoint_model_name == 'pact_smd_post'
             )
         ) and (
-            not use_gated_pivno
-            or checkpoint_model_name == 'defom_pivno_gated'
+            not (
+                use_gated_pivno
+                or use_concat_gru3_family
+                or use_gated_gru3_sr
+            )
+            or checkpoint_model_name == model_name
+        ) and (
+            not use_mask_sr
+            or checkpoint_model_name == model_name
         )
         if 'optimizer' in checkpoint and 'step' in checkpoint and 'epoch' in checkpoint and not \
                 args.no_resume_optimizer and same_optimizer_architecture:
@@ -834,7 +1517,7 @@ def train(args):
                         valid,
                         max_disp=args.max_disp,
                     )
-                    if use_gated_pivno:
+                    if use_scale_gate_pivno:
                         metrics.update(model_without_ddp.scale_gate_metrics())
                 elif use_pact_bilap:
                     sequence_loss, metrics = bilap_sequence_loss(disp_predictions, disp_gt, valid, max_disp=args.max_disp, gamma=0.9, nll_weight=args.bilap_nll_weight, map_weight=args.bilap_map_weight, edge_weight=args.bilap_edge_weight, diversity_weight=args.bilap_diversity_weight, diversity_margin=args.bilap_diversity_margin, nll_edge_only=args.bilap_nll_region == 'edge')
@@ -1185,7 +1868,7 @@ if __name__ == '__main__':
     parser.add_argument('--name', default='defom-stereo', help="name your experiment")
     parser.add_argument(
         '--model',
-        choices=['legacy', 'pact', 'pact_smd', 'pact_smd_post', 'pact_bilap_gru', 'pact2', 'pact2_gev', 'pact_pivno', 'defom_pivno', 'defom_pivno_gated'],
+        choices=['legacy', 'pact', 'pact_smd', 'pact_smd_post', 'pact_bilap_gru', 'pact2', 'pact2_gev', 'pact_pivno', 'defom_pivno', 'defom_pivno_mobilenetv2', 'defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr', 'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr', 'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr', 'defom_pivno_gwc4_enc16_concat_gru3', 'defom_pivno_gwc4_enc16_concat_gru3_mask_sr'],
         default='legacy',
         help="model family; PACT is opt-in to preserve existing checkpoints",
     )
@@ -1208,6 +1891,37 @@ if __name__ == '__main__':
         type=float,
         default=None,
         help='max LR for defom_pivno_gated scale_gate; defaults to --lr',
+    )
+    parser.add_argument(
+        '--pivno_gru_kernel_size',
+        type=int,
+        choices=[1, 3],
+        default=None,
+        help=(
+            'outer ConvGRU kernel for '
+            'defom_pivno_gated_gru_kernel_ablation; must be 1 or 3'
+        ),
+    )
+    parser.add_argument(
+        '--pivno_mask_sr_stage',
+        choices=['head', 'joint'],
+        default='head',
+        help='train only the final mask-guided SR head or all model weights',
+    )
+    parser.add_argument(
+        '--pivno_mask_sr_residual_max',
+        type=float,
+        default=4.0,
+        help='absolute full-resolution pixel bound for SR delta_d',
+    )
+    parser.add_argument(
+        '--pivno_mask_sr_pretrained_lr',
+        type=float,
+        default=None,
+        help=(
+            'LR for inherited hidden-SR head tensors in the RGB/hidden '
+            'fusion model; defaults to 0.1 times --lr'
+        ),
     )
     parser.add_argument('--image_size', type=int, nargs='+', default=[352, 768], help="size of the random image crops used during training.")
     parser.add_argument('--train_iters', type=int, default=18, help="number of updates to the disparity field in each forward pass.")

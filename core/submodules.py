@@ -1296,6 +1296,114 @@ def sample_right_feature_pyramid(right_features, disp, offsets, compression_rati
 
     return torch.cat(sampled_scales, dim=1) #batch, sample_count*level, channels, query_height, query_width
 
+
+def encode_sampled_right_features(
+    left_feature,
+    sampled_right,
+    num_groups=8,
+    eps=1e-4,
+):
+    """Encode every sampled right feature as residual plus group correlation.
+
+    Args:
+        left_feature: reference feature ``[B,C,H,W]``.
+        sampled_right: sampled right features ``[B,S,K,C,H,W]``.
+        num_groups: number of channel groups used by normalized GWC.
+        eps: lower bound for group norms. Exactly zero/OOB samples receive
+            zero correlation and zero correlation gradient.
+
+    Returns:
+        ``[B,S,K,C+G,H,W]`` containing ``right-left`` followed by the
+        ``G`` group-wise cosine correlations for each scale/sample pair.
+
+    The computation is split by scale to avoid materializing a full FP32 copy
+    of all sampled features at once under mixed-precision training.
+    """
+    if left_feature.ndim != 4:
+        raise ValueError(
+            "left_feature must be [B,C,H,W], got "
+            f"{tuple(left_feature.shape)}"
+        )
+    if sampled_right.ndim != 6:
+        raise ValueError(
+            "sampled_right must be [B,S,K,C,H,W], got "
+            f"{tuple(sampled_right.shape)}"
+        )
+    batch, channels, height, width = left_feature.shape
+    right_batch, _, _, right_channels, right_height, right_width = (
+        sampled_right.shape
+    )
+    if (right_batch, right_channels, right_height, right_width) != (
+        batch,
+        channels,
+        height,
+        width,
+    ):
+        raise ValueError(
+            "left/sample shape mismatch: "
+            f"left={tuple(left_feature.shape)} "
+            f"sampled={tuple(sampled_right.shape)}"
+        )
+    if num_groups <= 0 or channels % num_groups != 0:
+        raise ValueError(
+            f"feature channels ({channels}) must be divisible by "
+            f"num_groups ({num_groups})"
+        )
+    if eps <= 0:
+        raise ValueError(f"eps must be positive, got {eps}")
+
+    channels_per_group = channels // num_groups
+    left_for_residual = left_feature.to(sampled_right.dtype)
+    residual = sampled_right - left_for_residual[:, None, None]
+
+    with torch.cuda.amp.autocast(enabled=False):
+        left_groups = left_feature.float().reshape(
+            batch,
+            num_groups,
+            channels_per_group,
+            height,
+            width,
+        )
+        left_squared_norm = left_groups.square().sum(dim=2)
+        correlations = []
+        for right_scale in sampled_right.unbind(dim=1):
+            sample_count = right_scale.shape[1]
+            right_groups = right_scale.float().reshape(
+                batch,
+                sample_count,
+                num_groups,
+                channels_per_group,
+                height,
+                width,
+            )
+            numerator = (
+                left_groups[:, None] * right_groups
+            ).sum(dim=3)
+            right_squared_norm = right_groups.square().sum(dim=3)
+            squared_denominator = (
+                left_squared_norm[:, None] * right_squared_norm
+            )
+            valid_group = squared_denominator > eps * eps
+            # Clamp before sqrt: sqrt(0) has an infinite derivative, and a
+            # later torch.where cannot reliably mask the resulting 0*inf NaN.
+            denominator = torch.sqrt(
+                squared_denominator.clamp_min(eps * eps)
+            )
+            correlation = numerator / denominator
+            correlations.append(
+                torch.where(
+                    valid_group,
+                    correlation,
+                    torch.zeros_like(correlation),
+                )
+            )
+        group_correlation = torch.stack(correlations, dim=1)
+
+    return torch.cat(
+        [residual, group_correlation.to(residual.dtype)],
+        dim=3,
+    )
+
 def lookup_right_features(fmap1_low, right_feature_pyramid, disp, warp_offsets, feature_fuse, rope_galerkin=None, scale_weights=None, compression_ratios=(1, 2, 4)):
     """Sample and fuse local right-feature windows at the current disparity.
 
@@ -1307,18 +1415,10 @@ def lookup_right_features(fmap1_low, right_feature_pyramid, disp, warp_offsets, 
     ``feature_fuse`` receives ``C + S*K*C`` channels. With scale weights, the
     original weighted reduction is retained and it receives ``C + K*C``.
     """
-    if fmap1_low.ndim != 4:
-        raise ValueError(f"fmap1_low must be [B,C,H,W], got {tuple(fmap1_low.shape)}")
-    if len(right_feature_pyramid) != len(compression_ratios):
-        raise ValueError("right_feature_pyramid and compression_ratios must have equal length")
-
     sampled_right = sample_right_feature_pyramid(right_feature_pyramid, disp, offsets=warp_offsets.flatten(), compression_ratios=compression_ratios, padding_mode='zeros', align_corners=True)
     batch, channels, height, width = fmap1_low.shape
     num_scales = len(compression_ratios)
     num_samples = sampled_right.shape[1]
-    if num_samples % num_scales != 0:
-        raise RuntimeError(f"Cannot split {num_samples} samples into {num_scales} scales")
-
     samples_per_scale = num_samples // num_scales
     sampled_right = sampled_right.reshape(batch, num_scales, samples_per_scale, channels, height, width)
 

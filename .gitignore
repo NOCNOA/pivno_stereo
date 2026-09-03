@@ -1,6 +1,18 @@
-#weight
-*.pth
+#profiles
+checkpoints/
+runs/
 
 #logs
-*.log
 *.out
+*.logs
+
+#tmp
+*.pyc
+
+#eval
+*.csv
+*.json
+
+# Python caches
+__pycache__/
+*.py[cod]

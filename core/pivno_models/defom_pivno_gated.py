@@ -125,10 +125,6 @@ class DEFOMStereo(BaseDEFOMStereo):
         )
         batch, num_samples, channels, height, width = sampled_right.shape
         num_scales = len(self.compression_ratios)
-        if num_samples % num_scales != 0:
-            raise RuntimeError(
-                f"cannot split {num_samples} samples into {num_scales} scales"
-            )
         sampled_right = sampled_right.reshape(
             batch,
             num_scales,

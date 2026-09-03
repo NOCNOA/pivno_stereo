@@ -23,7 +23,6 @@ class DEFOMStereo(nn.Module):
     """
     特征提取头以及视差初始化换成了pivno
     改GRU
-    彩色图像版本
     """
     def __init__(self, args):
         super().__init__()
@@ -127,7 +126,7 @@ class DEFOMStereo(nn.Module):
         mask = mask.view(batch, 1, 9, factor, factor, height, width)
         mask = torch.softmax(mask, dim=2)
 
-        up_flow = F.unfold(factor * flow, [3, 3], padding=1)
+        up_flow = F.unfold(factor * flow, [3, 3], padding=1) #
         up_flow = up_flow.view(batch, channels, 9, 1, 1, height, width)
         up_flow = torch.sum(mask * up_flow, dim=2)
         up_flow = up_flow.permute(0, 1, 4, 2, 5, 3)

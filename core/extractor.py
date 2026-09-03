@@ -4,7 +4,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from timm.models.layers import DropPath
 import timm
-from depth_anything_v2.dpt import DepthAnythingV2
 from core.submodules import BasicConv, Conv2x_IN
 class Feature(nn.Module):
     def __init__(self, args, out_dim):
@@ -502,6 +501,10 @@ class MultiBasicEncoder(nn.Module):
 class DefomEncoder(nn.Module):
     def __init__(self, dinov2_encoder, pretrained=True, freeze=True, idepth_scale=0.25):
         super(DefomEncoder, self).__init__()
+        # Optional for the PIVNO bundle: PIVNO variants use
+        # MultiBasicEncoder2 and do not construct DefomEncoder.
+        from depth_anything_v2.dpt import DepthAnythingV2
+
         self.dinov2_encoder = dinov2_encoder
         self.idepth_scale = idepth_scale
         self.pretrained = pretrained
