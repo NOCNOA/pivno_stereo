@@ -1,11 +1,12 @@
 #profiles
 checkpoints/
 runs/
+weights/
 
 #logs
 *.out
 *.logs
-
+logs/
 #tmp
 *.pyc
 
