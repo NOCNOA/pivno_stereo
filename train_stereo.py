@@ -18,28 +18,17 @@ from torch.utils.data import DataLoader
 
 from utils.dist_utils import get_dist_info, init_dist, setup_for_distributed
 from utils.utils import *
-from utils.pact_smd_loss import pact_smd_auxiliary_loss
-from utils.pact_smd_post_loss import pact_smd_post_auxiliary_loss
-from utils.pact_bilap_loss import bilap_sequence_loss
 from utils.pact_pivno_loss import pact_pivno_sequence_loss
-from core.defom_pact import DEFOMStereo as PACTDEFOMStereo
-from core.defom_pact_smd import DEFOMStereo as PACTSMDDEFOMStereo
-from core.defom_pact_smd_post import DEFOMStereo as PACTSMDPostDEFOMStereo
-from core.defom_pact_bilap_gru import DEFOMStereo as PACTBiLapGRUDEFOMStereo
-from core.defom_pact2 import DEFOMStereo as PACT2DEFOMStereo
-from core.defom_pact2_gev import DEFOMStereo as PACT2GEVDEFOMStereo
 from core.pivno_models.defom_pact_pivno import DEFOMStereo as PACTPIVNODEFOMStereo
 from core.pivno_models.defom_pivno import DEFOMStereo as PIVNODEFOMStereo
 from core.pivno_models.defom_pivno_mobilenetv2 import DEFOMStereo as MobileNetV2PIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated import DEFOMStereo as GatedPIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated_gru1 import DEFOMStereo as GatedGRU1PIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated_gru3 import DEFOMStereo as GatedGRU3PIVNODEFOMStereo
+from core.pivno_models.defom_pivno_gated_gru3_gwc_only import DEFOMStereo as GatedGRU3GWCOnlyPIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated_gru_kernel_ablation import DEFOMStereo as GatedGRUKernelAblationPIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated_gru3_gwc4_mask_sr import DEFOMStereo as GatedGRU3GWC4MaskSRPIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated_gru3_gwc4_mask_rgb_sr import DEFOMStereo as GatedGRU3GWC4MaskRGBSRPIVNODEFOMStereo
-from core.pivno_models.defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr import DEFOMStereo as GatedGRU3GWC4MaskRGBHiddenSRPIVNODEFOMStereo
-from core.pivno_models.defom_pivno_gated_gru3_gwc4_mask_last_delta_sr import DEFOMStereo as GatedGRU3GWC4MaskLastDeltaSRPIVNODEFOMStereo
-from core.pivno_models.defom_pivno_gated_gru3_gwc4_last_delta_direct_sr import DEFOMStereo as GatedGRU3GWC4LastDeltaDirectSRPIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gwc4_enc16_concat_gru3 import DEFOMStereo as GWC4Enc16ConcatGRU3PIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gwc4_enc16_concat_gru3_mask_sr import DEFOMStereo as GWC4Enc16ConcatGRU3MaskSRPIVNODEFOMStereo
 try:
@@ -150,12 +139,17 @@ def train(args):
     )
     use_mask_sr = use_concat_gru3_mask_sr or use_gated_gru3_sr
     use_gated_gru3_pivno = model_name == 'defom_pivno_gated_gru3'
+    use_gated_gru3_gwc_only_pivno = (
+        model_name == 'defom_pivno_gated_gru3_gwc_only'
+    )
     use_gated_gru1_pivno = model_name == 'defom_pivno_gated_gru1'
     use_gated_gru_kernel_ablation = (
         model_name == 'defom_pivno_gated_gru_kernel_ablation'
     )
     use_gated_gru3_family = (
-        use_gated_gru3_pivno or use_gated_gru3_sr
+        use_gated_gru3_pivno
+        or use_gated_gru3_gwc_only_pivno
+        or use_gated_gru3_sr
     )
     use_concat_gru3_pivno = (
         model_name == 'defom_pivno_gwc4_enc16_concat_gru3'
@@ -173,6 +167,7 @@ def train(args):
         'defom_pivno_gated',
         'defom_pivno_gated_gru1',
         'defom_pivno_gated_gru3',
+        'defom_pivno_gated_gru3_gwc_only',
         'defom_pivno_gated_gru_kernel_ablation',
     )
     use_scale_gate_pivno = use_gated_pivno or use_gated_gru3_sr
@@ -182,6 +177,7 @@ def train(args):
         'defom_pivno_gated',
         'defom_pivno_gated_gru1',
         'defom_pivno_gated_gru3',
+        'defom_pivno_gated_gru3_gwc_only',
         'defom_pivno_gated_gru_kernel_ablation',
         'defom_pivno_gwc4_enc16_concat_gru3',
         'defom_pivno_gwc4_enc16_concat_gru3_mask_sr',
@@ -248,25 +244,7 @@ def train(args):
 
     seed_everything(args.seed + rank)
 
-    if use_pact_bilap:
-        model_cls = PACTBiLapGRUDEFOMStereo
-    elif use_pact_smd_post:
-        model_cls = PACTSMDPostDEFOMStereo
-    elif use_pact_smd:
-        model_cls = PACTSMDDEFOMStereo
-    elif use_pact2_gev:
-        model_cls = PACT2GEVDEFOMStereo
-    elif use_pact2:
-        model_cls = PACT2DEFOMStereo
-    elif use_pact:
-        model_cls = PACTDEFOMStereo
-    elif use_gated_gru3_last_delta_direct_sr:
-        model_cls = GatedGRU3GWC4LastDeltaDirectSRPIVNODEFOMStereo
-    elif use_gated_gru3_mask_last_delta_sr:
-        model_cls = GatedGRU3GWC4MaskLastDeltaSRPIVNODEFOMStereo
-    elif use_gated_gru3_mask_rgb_hidden_sr:
-        model_cls = GatedGRU3GWC4MaskRGBHiddenSRPIVNODEFOMStereo
-    elif use_gated_gru3_mask_rgb_sr:
+    if use_gated_gru3_mask_rgb_sr:
         model_cls = GatedGRU3GWC4MaskRGBSRPIVNODEFOMStereo
     elif use_gated_gru3_mask_sr:
         model_cls = GatedGRU3GWC4MaskSRPIVNODEFOMStereo
@@ -280,6 +258,8 @@ def train(args):
         model_cls = GatedGRUKernelAblationPIVNODEFOMStereo
     elif use_gated_gru3_pivno:
         model_cls = GatedGRU3PIVNODEFOMStereo
+    elif use_gated_gru3_gwc_only_pivno:
+        model_cls = GatedGRU3GWCOnlyPIVNODEFOMStereo
     elif use_gated_pivno:
         model_cls = GatedPIVNODEFOMStereo
     elif use_mobilenetv2_pivno:
@@ -1077,6 +1057,7 @@ def train(args):
                 if (
                     use_gated_gru1_pivno
                     or use_gated_gru3_pivno
+                    or use_gated_gru3_gwc_only_pivno
                     or use_gated_gru_kernel_ablation
                 )
                 else ('defom_pivno', 'defom_pivno_gated')
@@ -1097,6 +1078,7 @@ def train(args):
             if (
                 use_gated_gru1_pivno
                 or use_gated_gru3_pivno
+                or use_gated_gru3_gwc_only_pivno
                 or use_gated_gru_kernel_ablation
             ):
                 expected_shared.update({
@@ -1868,7 +1850,7 @@ if __name__ == '__main__':
     parser.add_argument('--name', default='defom-stereo', help="name your experiment")
     parser.add_argument(
         '--model',
-        choices=['legacy', 'pact', 'pact_smd', 'pact_smd_post', 'pact_bilap_gru', 'pact2', 'pact2_gev', 'pact_pivno', 'defom_pivno', 'defom_pivno_mobilenetv2', 'defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr', 'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr', 'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr', 'defom_pivno_gwc4_enc16_concat_gru3', 'defom_pivno_gwc4_enc16_concat_gru3_mask_sr'],
+        choices=['legacy', 'pact_pivno', 'defom_pivno', 'defom_pivno_mobilenetv2', 'defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru3_gwc_only', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gwc4_enc16_concat_gru3', 'defom_pivno_gwc4_enc16_concat_gru3_mask_sr'],
         default='legacy',
         help="model family; PACT is opt-in to preserve existing checkpoints",
     )
@@ -1914,113 +1896,9 @@ if __name__ == '__main__':
         default=4.0,
         help='absolute full-resolution pixel bound for SR delta_d',
     )
-    parser.add_argument(
-        '--pivno_mask_sr_pretrained_lr',
-        type=float,
-        default=None,
-        help=(
-            'LR for inherited hidden-SR head tensors in the RGB/hidden '
-            'fusion model; defaults to 0.1 times --lr'
-        ),
-    )
     parser.add_argument('--image_size', type=int, nargs='+', default=[352, 768], help="size of the random image crops used during training.")
     parser.add_argument('--train_iters', type=int, default=18, help="number of updates to the disparity field in each forward pass.")
     parser.add_argument('--scale_iters', type=int, default=8, help="number of scaling updates to the disparity field in each forward pass.")
-    parser.add_argument('--pact_mid_refine_iters', type=int, default=1,
-                        help='number of 1/8 PACT corrections before 1/4 recurrent updates')
-    parser.add_argument(
-        '--pact_smd_stage', choices=['head', 'joint', 'full'], default='joint',
-        help=(
-            'train only the bimodal head, adapt head plus refinement, or '
-            'train all active stereo modules and the head from scratch'
-        ),
-    )
-    parser.add_argument(
-        '--pact_smd_grad_iters', type=int, default=2,
-        help='number of recurrent iterations that propagate disparity gradients back to d0',
-    )
-    parser.add_argument(
-        '--pact_smd_mode_threshold', type=float, default=0.5,
-        help='minimum log-peak advantage required to select the second Laplace mode',
-    )
-    parser.add_argument('--pact_smd_head_lr', type=float, default=2.0e-4)
-    parser.add_argument('--pact_smd_adapt_lr', type=float, default=2.0e-5)
-    parser.add_argument('--pact_smd_head_sequence_weight', type=float, default=0.5)
-    parser.add_argument('--pact_smd_nll_head_weight', type=float, default=1.0)
-    parser.add_argument('--pact_smd_nll_joint_weight', type=float, default=0.1)
-    parser.add_argument('--pact_smd_nll_full_weight', type=float, default=1.0)
-    parser.add_argument('--pact_smd_base_aux_weight', type=float, default=1.0)
-    parser.add_argument('--pact_smd_selection_weight', type=float, default=0.2)
-    parser.add_argument('--pact_smd_guard_weight', type=float, default=0.05)
-    parser.add_argument('--pact_smd_post_lr', type=float, default=2.0e-4)
-    parser.add_argument('--pact_smd_post_mode_threshold', type=float, default=0.5)
-    parser.add_argument('--pact_smd_post_local_radius', type=float, default=1.0)
-    parser.add_argument('--pact_smd_post_broad_radius_min', type=float, default=2.0)
-    parser.add_argument('--pact_smd_post_broad_radius_max', type=float, default=32.0)
-    parser.add_argument('--pact_smd_post_map_weight', type=float, default=1.0)
-    parser.add_argument('--pact_smd_post_nll_weight', type=float, default=1.0)
-    parser.add_argument('--pact_smd_post_selection_weight', type=float, default=0.2)
-    parser.add_argument('--pact_smd_post_guard_weight', type=float, default=0.2)
-    parser.add_argument('--pact_smd_post_bad3_weight', type=float, default=0.05)
-    parser.add_argument('--pact_smd_post_edge_weight', type=float, default=2.0)
-    parser.add_argument('--pact_smd_post_guard_margin', type=float, default=0.25)
-    parser.add_argument('--pact_smd_post_bad3_tau', type=float, default=0.5)
-    parser.add_argument('--bilap_ablation', choices=['single_laplace', 'dual_no_interaction', 'dual_symmetric_interaction'], default='dual_symmetric_interaction')
-    parser.add_argument('--bilap_init', choices=['smd', 'symmetric'], default='smd')
-    parser.add_argument('--bilap_init_delta', type=float, default=2.0)
-    parser.add_argument('--bilap_init_scale', type=float, default=2.0)
-    parser.add_argument('--bilap_separate_mode_gru', action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument('--bilap_lookup_mode', choices=['fixed', 'scale_aware'], default='scale_aware')
-    parser.add_argument('--bilap_q_min', type=float, default=1.0)
-    parser.add_argument('--bilap_q_max', type=float, default=4.0)
-    parser.add_argument('--bilap_q_scale', type=float, default=0.5)
-    parser.add_argument('--bilap_checkpoint_update', action=argparse.BooleanOptionalAction, default=True, help='checkpoint the recurrent BiLap update block during training to save activation memory')
-    parser.add_argument('--bilap_nll_weight', type=float, default=1.0)
-    parser.add_argument('--bilap_nll_region', choices=['edge', 'all'], default='edge')
-    parser.add_argument('--bilap_map_weight', type=float, default=1.0)
-    parser.add_argument('--bilap_edge_weight', type=float, default=2.0)
-    parser.add_argument('--bilap_diversity_weight', type=float, default=0.0)
-    parser.add_argument('--bilap_diversity_margin', type=float, default=3.0)
-    parser.add_argument(
-        '--pact_gev_mode', choices=['coarse', 'dual'], default='dual',
-        help='PACT2-GEV aggregation: 1/16 only or both 1/16 and dynamic 1/4',
-    )
-    parser.add_argument(
-        '--pact_sampling_layout', choices=['legacy9', 'wide9'], default='legacy9',
-        help='nine-candidate PACT local-correlation layout',
-    )
-    parser.add_argument(
-        '--pact_min_radius', type=float, default=1.0,
-        help='minimum adaptive PACT radius in quarter-disparity units',
-    )
-    parser.add_argument(
-        '--pact_max_radius', type=float, default=8.0,
-        help='maximum adaptive PACT radius in quarter-disparity units',
-    )
-    parser.add_argument(
-        '--pact_mid_delta_scale', type=float, default=1.0,
-        help='extra multiplier on the single 1/8 mid-refiner correction',
-    )
-    parser.add_argument('--pact_checkpoint_corr', action=argparse.BooleanOptionalAction, default=True, help='checkpoint dynamic PACT correlation during training to save memory')
-    parser.add_argument(
-        '--pact_fp32_stereo',
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help=(
-            'run trainable PACT feature/context/coarse branches in FP32; '
-            'enabled by default for stable candidate-correlation gradients'
-        ),
-    )
-    parser.add_argument(
-        '--pact_fp32_update',
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help='run the recurrent PACT update block in FP32 (enabled by default)',
-    )
-    parser.add_argument(
-        '--pact_debug_finite_steps', type=int, default=0,
-        help='check PACT tensors/loss/gradients for this many steps after startup',
-    )
     parser.add_argument('--wdecay', type=float, default=.00001, help="Weight decay in optimizer.")
     parser.add_argument('--mixed_precision', action='store_true', help='use mixed precision')
     parser.add_argument('--seed', default=1234565, type=int)

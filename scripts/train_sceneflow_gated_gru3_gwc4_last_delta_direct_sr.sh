@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export SCENEFLOW_ROOT="${SCENEFLOW_ROOT:-/data/public_data}"
+source "$(dirname "${BASH_SOURCE[0]}")/dataset_env.sh"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/matplotlib}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/tmp/cache}"

@@ -31,14 +31,12 @@ copied into a compatible checkout.
 - `defom_pivno_gated`
 - `defom_pivno_gated_gru1`
 - `defom_pivno_gated_gru3`
+- `defom_pivno_gated_gru3_gwc_only`
 - `defom_pivno_gated_gru_kernel_ablation`
 - `defom_pivno_gwc4_enc16_concat_gru3`
 - `defom_pivno_gwc4_enc16_concat_gru3_mask_sr`
 - `defom_pivno_gated_gru3_gwc4_mask_sr`
 - `defom_pivno_gated_gru3_gwc4_mask_rgb_sr`
-- `defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr`
-- `defom_pivno_gated_gru3_gwc4_mask_last_delta_sr`
-- `defom_pivno_gated_gru3_gwc4_last_delta_direct_sr`
 
 Use each checkpoint only with the matching `--model` value and architecture
 metadata. A successful strict state-dict load does not make checkpoints from
@@ -55,3 +53,18 @@ different variants interchangeable.
 `MANIFEST.txt` lists the packaged files, `SHA256SUMS` records checksums for the
 selected exported model weights, and `TEST_REPORT.md` records the verification
 boundary and the two pre-existing test mismatches.
+
+## Local datasets
+
+Dataset paths for this machine are stored in the ignored `.dataset_env` file.
+All launchers under `scripts/` load it automatically. For a direct Python
+command, load the same variables first:
+
+```bash
+source .dataset_env
+python evaluate_stereo.py --help
+```
+
+The configured roots are `SCENEFLOW_ROOT`, `KITTI_ROOT`, `ETH3D_ROOT`, and
+`MIDDLEBURY_ROOT`. Exporting any of them before running a launcher overrides
+the local file. PIVNO's generated SceneFlow lists are under `PIVNO/stereo/`.

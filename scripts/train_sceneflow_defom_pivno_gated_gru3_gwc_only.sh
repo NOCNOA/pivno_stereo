@@ -2,36 +2,30 @@
 set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/dataset_env.sh"
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/matplotlib}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-/tmp/cache}"
 
 CONDA_ENV="${CONDA_ENV:-defomstereo}"
-CONDA_BIN="${CONDA_BIN:-${CONDA_EXE:-}}"
-MASTER_PORT="${MASTER_PORT:-29549}"
+CONDA_BIN="${CONDA_BIN:-/home/u2025140689/anaconda3/bin/conda}"
+MASTER_PORT="${MASTER_PORT:-29545}"
 IMAGE_HEIGHT="${IMAGE_HEIGHT:-320}"
 IMAGE_WIDTH="${IMAGE_WIDTH:-768}"
-BATCH_SIZE="${BATCH_SIZE:-4}"
+BATCH_SIZE="${BATCH_SIZE:-2}"
 LEARNING_RATE="${LEARNING_RATE:-0.0002}"
 NUM_STEPS="${NUM_STEPS:-200000}"
-TRAIN_ITERS="${TRAIN_ITERS:-18}"
+TRAIN_ITERS="${TRAIN_ITERS:-16}"
 CORR_RADIUS="${CORR_RADIUS:-4}"
 NUM_WORKERS_PER_GPU="${NUM_WORKERS_PER_GPU:-4}"
 
-if [[ -z "${CONDA_BIN}" ]]; then
-  if command -v conda >/dev/null 2>&1; then
-    CONDA_BIN="$(command -v conda)"
-  elif [[ -x /home/yijiayi/anaconda3/bin/conda ]]; then
-    CONDA_BIN="/home/yijiayi/anaconda3/bin/conda"
-  else
-    echo "Conda executable not found; set CONDA_BIN explicitly." >&2
-    exit 2
-  fi
-fi
 if [[ ! -x "${CONDA_BIN}" ]]; then
-  echo "Conda executable is not runnable: ${CONDA_BIN}" >&2
+  echo "Conda executable does not exist or is not executable: ${CONDA_BIN}" >&2
   exit 2
 fi
+
+CONDA_ENV_PREFIX="$("${CONDA_BIN}" run -n "${CONDA_ENV}" python -c 'import sys; print(sys.prefix)')"
+export LD_LIBRARY_PATH="${CONDA_ENV_PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+unset CONDA_ENV_PREFIX
 
 IFS=',' read -r -a GPU_LIST <<< "${CUDA_VISIBLE_DEVICES}"
 NUM_GPUS="${#GPU_LIST[@]}"
@@ -50,7 +44,7 @@ for ((gpu_index = 0; gpu_index < NUM_GPUS; gpu_index++)); do
   GPU_IDS+=("${gpu_index}")
 done
 
-NAME="${NAME:-defom_pivno_mobilenetv2_rgb_d768_${IMAGE_HEIGHT}x${IMAGE_WIDTH}_b${BATCH_SIZE}_${NUM_GPUS}gpu}"
+NAME="${NAME:-defom_pivno_gated_gru3_gwc_only_c48_g8_enc16_d768_${IMAGE_HEIGHT}x${IMAGE_WIDTH}_b${BATCH_SIZE}_${NUM_GPUS}gpu_200k}"
 CHECKPOINT_DIR="checkpoints/${NAME}"
 mkdir -p "${CHECKPOINT_DIR}"
 
@@ -61,14 +55,14 @@ for subset in FlyingThings3D Monkaa Driving; do
   fi
 done
 
-echo "Launching MobileNetV2 DEFOM-PIVNO: GPUs=${CUDA_VISIBLE_DEVICES}, world_size=${NUM_GPUS}, global_batch=${BATCH_SIZE}, local_batch=${LOCAL_BATCH_SIZE}, lr=${LEARNING_RATE}, steps=${NUM_STEPS}, crop=${IMAGE_HEIGHT}x${IMAGE_WIDTH}, iters=${TRAIN_ITERS}, data=${SCENEFLOW_ROOT}"
+echo "Launching GWC-only DEFOM-PIVNO-gated-GRU3 from scratch: GPUs=${CUDA_VISIBLE_DEVICES}, world_size=${NUM_GPUS}, global_batch=${BATCH_SIZE}, local_batch=${LOCAL_BATCH_SIZE}, lr=${LEARNING_RATE}, steps=${NUM_STEPS}, crop=${IMAGE_HEIGHT}x${IMAGE_WIDTH}, iters=${TRAIN_ITERS}, data=${SCENEFLOW_ROOT}"
 
 "${CONDA_BIN}" run -n "${CONDA_ENV}" --no-capture-output torchrun \
   --nproc_per_node="${NUM_GPUS}" \
   --master_addr=127.0.0.1 \
   --master_port="${MASTER_PORT}" \
   train_stereo.py \
-  --model defom_pivno_mobilenetv2 \
+  --model defom_pivno_gated_gru3_gwc_only \
   --distributed \
   --launcher pytorch \
   --gpu_ids "${GPU_IDS[@]}" \
@@ -81,6 +75,7 @@ echo "Launching MobileNetV2 DEFOM-PIVNO: GPUs=${CUDA_VISIBLE_DEVICES}, world_siz
   --max_disp 768 \
   --num_steps "${NUM_STEPS}" \
   --lr "${LEARNING_RATE}" \
+  --pivno_gate_lr "${LEARNING_RATE}" \
   --mixed_precision \
   --n_downsample 2 \
   --n_gru_layers 3 \

@@ -11,24 +11,16 @@ import torch.nn.functional as F
 from PIL import Image
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-from core.defom_pact import DEFOMStereo as PACTDEFOMStereo
-from core.defom_pact_smd import DEFOMStereo as PACTSMDDEFOMStereo
-from core.defom_pact_smd_post import DEFOMStereo as PACTSMDPostDEFOMStereo
-from core.defom_pact_bilap_gru import DEFOMStereo as PACTBiLapGRUDEFOMStereo
-from core.defom_pact2 import DEFOMStereo as PACT2DEFOMStereo
-from core.defom_pact2_gev import DEFOMStereo as PACT2GEVDEFOMStereo
 from core.pivno_models.defom_pact_pivno import DEFOMStereo as PACTPIVNODEFOMStereo
 from core.pivno_models.defom_pivno import DEFOMStereo as PIVNODEFOMStereo
 from core.pivno_models.defom_pivno_mobilenetv2 import DEFOMStereo as MobileNetV2PIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated import DEFOMStereo as GatedPIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated_gru1 import DEFOMStereo as GatedGRU1PIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated_gru3 import DEFOMStereo as GatedGRU3PIVNODEFOMStereo
+from core.pivno_models.defom_pivno_gated_gru3_gwc_only import DEFOMStereo as GatedGRU3GWCOnlyPIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated_gru_kernel_ablation import DEFOMStereo as GatedGRUKernelAblationPIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated_gru3_gwc4_mask_sr import DEFOMStereo as GatedGRU3GWC4MaskSRPIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated_gru3_gwc4_mask_rgb_sr import DEFOMStereo as GatedGRU3GWC4MaskRGBSRPIVNODEFOMStereo
-from core.pivno_models.defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr import DEFOMStereo as GatedGRU3GWC4MaskRGBHiddenSRPIVNODEFOMStereo
-from core.pivno_models.defom_pivno_gated_gru3_gwc4_mask_last_delta_sr import DEFOMStereo as GatedGRU3GWC4MaskLastDeltaSRPIVNODEFOMStereo
-from core.pivno_models.defom_pivno_gated_gru3_gwc4_last_delta_direct_sr import DEFOMStereo as GatedGRU3GWC4LastDeltaDirectSRPIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gwc4_enc16_concat_gru3 import DEFOMStereo as GWC4Enc16ConcatGRU3PIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gwc4_enc16_concat_gru3_mask_sr import DEFOMStereo as GWC4Enc16ConcatGRU3MaskSRPIVNODEFOMStereo
 try:
@@ -154,20 +146,10 @@ def _distributed_nanmean_rows(rows):
     )
 
 
-def _model_manages_amp(model):
-    return isinstance(
-        _unwrap_model(model),
-        (PACTDEFOMStereo, PACTSMDDEFOMStereo, PACT2DEFOMStereo),
-    )
-
-
 def _eval_forward(model, mixed_prec, *args, **kwargs):
-    """PACT owns its AMP boundaries; legacy models retain evaluator autocast."""
-    if _model_manages_amp(model):
+    """Run evaluation under the evaluator's mixed-precision context."""
+    with autocast(enabled=mixed_prec):
         output = model(*args, **kwargs)
-    else:
-        with autocast(enabled=mixed_prec):
-            output = model(*args, **kwargs)
     if isinstance(output, dict) and torch.is_tensor(output.get("disp")):
         return output["disp"]
     return output
@@ -919,7 +901,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument(
         '--model',
-        choices=['cor_ga', 'pact', 'pact_smd', 'pact_smd_post', 'pact_bilap_gru', 'pact2', 'pact2_gev', 'pact_pivno', 'defom_pivno', 'defom_pivno_mobilenetv2', 'defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr', 'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr', 'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr', 'defom_pivno_gwc4_enc16_concat_gru3', 'defom_pivno_gwc4_enc16_concat_gru3_mask_sr'],
+        choices=['cor_ga', 'pact_pivno', 'defom_pivno', 'defom_pivno_mobilenetv2', 'defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru3_gwc_only', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gwc4_enc16_concat_gru3', 'defom_pivno_gwc4_enc16_concat_gru3_mask_sr'],
         default='cor_ga',
         help="model family; PACT is opt-in to preserve old checkpoint loading",
     )
@@ -941,8 +923,6 @@ if __name__ == '__main__':
             'pass, for example: 192 384 512 768'
         ),
     )
-    parser.add_argument('--pact_debug_finite', action='store_true')
-    parser.add_argument('--pact_mid_refine_iters', type=int, default=1)
     parser.add_argument('--pivno_mask_sr_stage', choices=['head', 'joint'], default='head')
     parser.add_argument('--pivno_mask_sr_residual_max', type=float, default=4.0)
     parser.add_argument(
@@ -952,29 +932,6 @@ if __name__ == '__main__':
         default=None,
         help='outer ConvGRU kernel for the strict C32/GWC4 ablation',
     )
-    parser.add_argument(
-        '--pact_smd_stage', choices=['head', 'joint', 'full'], default='joint'
-    )
-    parser.add_argument('--pact_smd_grad_iters', type=int, default=2)
-    parser.add_argument('--pact_smd_mode_threshold', type=float, default=0.5)
-    parser.add_argument('--pact_smd_post_mode_threshold', type=float, default=0.5)
-    parser.add_argument('--pact_smd_post_local_radius', type=float, default=1.0)
-    parser.add_argument('--pact_smd_post_broad_radius_min', type=float, default=2.0)
-    parser.add_argument('--pact_smd_post_broad_radius_max', type=float, default=32.0)
-    parser.add_argument('--bilap_ablation', choices=['single_laplace', 'dual_no_interaction', 'dual_symmetric_interaction'], default='dual_symmetric_interaction')
-    parser.add_argument('--bilap_init', choices=['smd', 'symmetric'], default='smd')
-    parser.add_argument('--bilap_init_delta', type=float, default=2.0)
-    parser.add_argument('--bilap_init_scale', type=float, default=2.0)
-    parser.add_argument('--bilap_separate_mode_gru', action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument('--bilap_lookup_mode', choices=['fixed', 'scale_aware'], default='scale_aware')
-    parser.add_argument('--bilap_q_min', type=float, default=1.0)
-    parser.add_argument('--bilap_q_max', type=float, default=4.0)
-    parser.add_argument('--bilap_q_scale', type=float, default=0.5)
-    parser.add_argument('--pact_gev_mode', choices=['coarse', 'dual'], default='dual')
-    parser.add_argument('--pact_sampling_layout', choices=['legacy9', 'wide9'], default='legacy9')
-    parser.add_argument('--pact_min_radius', type=float, default=1.0)
-    parser.add_argument('--pact_max_radius', type=float, default=8.0)
-    parser.add_argument('--pact_mid_delta_scale', type=float, default=1.0)
     parser.add_argument('--mixed_precision', action='store_true', help='use mixed precision')
     parser.add_argument('--valid_iters', type=int, default=32, help='number of disparity field updates during forward pass')
     parser.add_argument('--scale_iters', type=int, default=20, help="number of scaling updates to the disparity field in each forward pass.")
@@ -1001,7 +958,7 @@ if __name__ == '__main__':
                         help='shard evaluation samples across torchrun processes')
 
     args = parser.parse_args()
-    pact_model = args.model in ('pact', 'pact_smd', 'pact_smd_post', 'pact_bilap_gru', 'pact2', 'pact2_gev', 'pact_pivno', 'defom_pivno', 'defom_pivno_mobilenetv2', 'defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr', 'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr', 'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr', 'defom_pivno_gwc4_enc16_concat_gru3', 'defom_pivno_gwc4_enc16_concat_gru3_mask_sr')
+    pact_model = args.model in ('pact_pivno', 'defom_pivno', 'defom_pivno_mobilenetv2', 'defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru3_gwc_only', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gwc4_enc16_concat_gru3', 'defom_pivno_gwc4_enc16_concat_gru3_mask_sr')
     if args.max_disp is None:
         if pact_model:
             parser.error('--max_disp is required for PACT because legacy checkpoints do not store it')
@@ -1101,19 +1058,7 @@ if __name__ == '__main__':
             flush=True,
         )
 
-    if args.model == 'pact_bilap_gru':
-        model_cls = PACTBiLapGRUDEFOMStereo
-    elif args.model == 'pact_smd_post':
-        model_cls = PACTSMDPostDEFOMStereo
-    elif args.model == 'pact_smd':
-        model_cls = PACTSMDDEFOMStereo
-    elif args.model == 'pact2_gev':
-        model_cls = PACT2GEVDEFOMStereo
-    elif args.model == 'pact2':
-        model_cls = PACT2DEFOMStereo
-    elif args.model == 'pact':
-        model_cls = PACTDEFOMStereo
-    elif args.model == 'pact_pivno':
+    if args.model == 'pact_pivno':
         model_cls = PACTPIVNODEFOMStereo
     elif args.model == 'defom_pivno':
         model_cls = PIVNODEFOMStereo
@@ -1127,18 +1072,14 @@ if __name__ == '__main__':
         model_cls = GatedGRU3GWC4MaskSRPIVNODEFOMStereo
     elif args.model == 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr':
         model_cls = GatedGRU3GWC4MaskRGBSRPIVNODEFOMStereo
-    elif args.model == 'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr':
-        model_cls = GatedGRU3GWC4MaskRGBHiddenSRPIVNODEFOMStereo
-    elif args.model == 'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr':
-        model_cls = GatedGRU3GWC4MaskLastDeltaSRPIVNODEFOMStereo
-    elif args.model == 'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr':
-        model_cls = GatedGRU3GWC4LastDeltaDirectSRPIVNODEFOMStereo
     elif args.model == 'defom_pivno_gated_gru1':
         model_cls = GatedGRU1PIVNODEFOMStereo
     elif args.model == 'defom_pivno_gated_gru_kernel_ablation':
         model_cls = GatedGRUKernelAblationPIVNODEFOMStereo
     elif args.model == 'defom_pivno_gated_gru3':
         model_cls = GatedGRU3PIVNODEFOMStereo
+    elif args.model == 'defom_pivno_gated_gru3_gwc_only':
+        model_cls = GatedGRU3GWCOnlyPIVNODEFOMStereo
     elif args.model == 'defom_pivno_gated':
         model_cls = GatedPIVNODEFOMStereo
     else:
@@ -1200,7 +1141,7 @@ if __name__ == '__main__':
                 'n_gru_layers': int(args.n_gru_layers),
                 'hidden_dims': list(args.hidden_dims),
             }
-            if args.model in ('pact_pivno', 'defom_pivno', 'defom_pivno_mobilenetv2', 'defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr', 'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr', 'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr', 'defom_pivno_gwc4_enc16_concat_gru3', 'defom_pivno_gwc4_enc16_concat_gru3_mask_sr'):
+            if args.model in ('pact_pivno', 'defom_pivno', 'defom_pivno_mobilenetv2', 'defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru3_gwc_only', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr', 'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr', 'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr', 'defom_pivno_gwc4_enc16_concat_gru3', 'defom_pivno_gwc4_enc16_concat_gru3_mask_sr'):
                 expected.update({
                     'model': (
                         'defom_pivno_gated_gru3'
@@ -1214,12 +1155,13 @@ if __name__ == '__main__':
                     ),
                     'state_mode': 'pivno_single_current_disp',
                 })
-                if args.model in ('defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr', 'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr', 'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr'):
+                if args.model in ('defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru3_gwc_only', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr', 'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr', 'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr'):
                     expected['pivno_scale_gate'] = model_cls.SCALE_GATE_MODE
                     expected['corr_radius'] = int(args.corr_radius)
                 if args.model in (
                     'defom_pivno_gated_gru1',
                     'defom_pivno_gated_gru3',
+                    'defom_pivno_gated_gru3_gwc_only',
                     'defom_pivno_gated_gru_kernel_ablation',
                     'defom_pivno_gated_gru3_gwc4_mask_sr',
                     'defom_pivno_gated_gru3_gwc4_mask_rgb_sr',
