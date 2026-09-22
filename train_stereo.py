@@ -18,13 +18,20 @@ from torch.utils.data import DataLoader
 
 from utils.dist_utils import get_dist_info, init_dist, setup_for_distributed
 from utils.utils import *
-from utils.pact_pivno_loss import pact_pivno_sequence_loss
+from utils.pact_pivno_loss import (
+    pact_pivno_sequence_loss,
+    pivno_initialization_loss,
+)
 from core.pivno_models.defom_pact_pivno import DEFOMStereo as PACTPIVNODEFOMStereo
 from core.pivno_models.defom_pivno import DEFOMStereo as PIVNODEFOMStereo
-from core.pivno_models.defom_pivno_mobilenetv2 import DEFOMStereo as MobileNetV2PIVNODEFOMStereo
+from core.pivno_models.defom_pivno_mobilenet.defom_pivno_mobilenetv2 import DEFOMStereo as MobileNetV2PIVNODEFOMStereo
+from core.pivno_models.defom_pivno_mobilenet.defom_pivno_gated_gru3_mobilenetv2_convex_bnfreeze import DEFOMStereo as GatedGRU3MobileNetV2ConvexBNFreezePIVNODEFOMStereo
+from core.pivno_models.defom_pivno_mobilenet.defom_pivno_gated_gru3_mobilenetv2_raw_dilated_joint import DEFOMStereo as GatedGRU3MobileNetV2RawDilatedJointPIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated import DEFOMStereo as GatedPIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated_gru1 import DEFOMStereo as GatedGRU1PIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated_gru3 import DEFOMStereo as GatedGRU3PIVNODEFOMStereo
+from core.pivno_models.defom_pivno_gated_gru3_bins import DEFOMStereo as GatedGRU3BinsPIVNODEFOMStereo
+from core.pivno_models.defom_pivno_mobilenet.defom_pivno_gated_gru3_mobilenetv2_bins import DEFOMStereo as GatedGRU3MobileNetV2BinsPIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated_gru3_gwc_only import DEFOMStereo as GatedGRU3GWCOnlyPIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated_gru_kernel_ablation import DEFOMStereo as GatedGRUKernelAblationPIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated_gru3_gwc4_mask_sr import DEFOMStereo as GatedGRU3GWC4MaskSRPIVNODEFOMStereo
@@ -112,6 +119,12 @@ def train(args):
     use_pact_bilap = model_name == 'pact_bilap_gru'
     use_pact_pivno = model_name == 'pact_pivno'
     use_mobilenetv2_pivno = model_name == 'defom_pivno_mobilenetv2'
+    use_gated_gru3_mobilenetv2_convex_bnfreeze = (
+        model_name == 'defom_pivno_gated_gru3_mobilenetv2_convex_bnfreeze'
+    )
+    use_gated_gru3_mobilenetv2_raw_dilated_joint = (
+        model_name == 'defom_pivno_gated_gru3_mobilenetv2_raw_dilated_joint'
+    )
     use_concat_gru3_mask_sr = (
         model_name == 'defom_pivno_gwc4_enc16_concat_gru3_mask_sr'
     )
@@ -139,6 +152,13 @@ def train(args):
     )
     use_mask_sr = use_concat_gru3_mask_sr or use_gated_gru3_sr
     use_gated_gru3_pivno = model_name == 'defom_pivno_gated_gru3'
+    use_gated_gru3_mobilenetv2_bins = (
+        model_name == 'defom_pivno_gated_gru3_mobilenetv2_bins'
+    )
+    use_gated_gru3_bins_pivno = model_name in (
+        'defom_pivno_gated_gru3_bins',
+        'defom_pivno_gated_gru3_mobilenetv2_bins',
+    )
     use_gated_gru3_gwc_only_pivno = (
         model_name == 'defom_pivno_gated_gru3_gwc_only'
     )
@@ -148,6 +168,9 @@ def train(args):
     )
     use_gated_gru3_family = (
         use_gated_gru3_pivno
+        or use_gated_gru3_mobilenetv2_convex_bnfreeze
+        or use_gated_gru3_mobilenetv2_raw_dilated_joint
+        or use_gated_gru3_bins_pivno
         or use_gated_gru3_gwc_only_pivno
         or use_gated_gru3_sr
     )
@@ -167,16 +190,27 @@ def train(args):
         'defom_pivno_gated',
         'defom_pivno_gated_gru1',
         'defom_pivno_gated_gru3',
+        'defom_pivno_gated_gru3_mobilenetv2_convex_bnfreeze',
+        'defom_pivno_gated_gru3_mobilenetv2_raw_dilated_joint',
         'defom_pivno_gated_gru3_gwc_only',
         'defom_pivno_gated_gru_kernel_ablation',
     )
-    use_scale_gate_pivno = use_gated_pivno or use_gated_gru3_sr
+    use_scale_gate_pivno = (
+        use_gated_pivno or use_gated_gru3_sr or use_gated_gru3_bins_pivno
+        or use_gated_gru3_mobilenetv2_convex_bnfreeze
+        or use_gated_gru3_mobilenetv2_raw_dilated_joint
+        or use_gated_gru3_mobilenetv2_bins
+    )
     use_defom_pivno = model_name in (
         'defom_pivno',
         'defom_pivno_mobilenetv2',
         'defom_pivno_gated',
         'defom_pivno_gated_gru1',
         'defom_pivno_gated_gru3',
+        'defom_pivno_gated_gru3_mobilenetv2_convex_bnfreeze',
+        'defom_pivno_gated_gru3_mobilenetv2_raw_dilated_joint',
+        'defom_pivno_gated_gru3_bins',
+        'defom_pivno_gated_gru3_mobilenetv2_bins',
         'defom_pivno_gated_gru3_gwc_only',
         'defom_pivno_gated_gru_kernel_ablation',
         'defom_pivno_gwc4_enc16_concat_gru3',
@@ -189,6 +223,11 @@ def train(args):
     )
     use_pivno = use_pact_pivno or use_defom_pivno
     use_pact = model_name in ('pact', 'pact_smd', 'pact_smd_post', 'pact_bilap_gru', 'pact2', 'pact2_gev')
+    freeze_batchnorm = (
+        use_pact or use_gated_gru3_mobilenetv2_convex_bnfreeze
+        or use_gated_gru3_mobilenetv2_raw_dilated_joint
+        or use_gated_gru3_mobilenetv2_bins
+    )
     use_pact2_gev = model_name == 'pact2_gev'
     use_pact2 = model_name in ('pact2', 'pact2_gev')
     configured_eval_max_disp = getattr(args, 'eval_max_disp', None)
@@ -256,8 +295,16 @@ def train(args):
         model_cls = GatedGRU1PIVNODEFOMStereo
     elif use_gated_gru_kernel_ablation:
         model_cls = GatedGRUKernelAblationPIVNODEFOMStereo
+    elif use_gated_gru3_mobilenetv2_convex_bnfreeze:
+        model_cls = GatedGRU3MobileNetV2ConvexBNFreezePIVNODEFOMStereo
+    elif use_gated_gru3_mobilenetv2_raw_dilated_joint:
+        model_cls = GatedGRU3MobileNetV2RawDilatedJointPIVNODEFOMStereo
     elif use_gated_gru3_pivno:
         model_cls = GatedGRU3PIVNODEFOMStereo
+    elif use_gated_gru3_mobilenetv2_bins:
+        model_cls = GatedGRU3MobileNetV2BinsPIVNODEFOMStereo
+    elif use_gated_gru3_bins_pivno:
+        model_cls = GatedGRU3BinsPIVNODEFOMStereo
     elif use_gated_gru3_gwc_only_pivno:
         model_cls = GatedGRU3GWCOnlyPIVNODEFOMStereo
     elif use_gated_pivno:
@@ -285,7 +332,12 @@ def train(args):
         ),
         'feature_backbone': (
             model_cls.FEATURE_BACKBONE
-            if (use_pact2 or use_mobilenetv2_pivno) else None
+            if (use_pact2 or use_mobilenetv2_pivno) else (
+                model_cls.ENCODER_CONFIG['feature_backbone']
+                if (use_gated_gru3_mobilenetv2_convex_bnfreeze
+                    or use_gated_gru3_mobilenetv2_raw_dilated_joint
+                    or use_gated_gru3_mobilenetv2_bins) else None
+            )
         ),
         'dinov2_encoder': args.dinov2_encoder,
         'idepth_scale': float(args.idepth_scale),
@@ -379,6 +431,13 @@ def train(args):
                 'pivno_feature_encoder': model_cls.FEATURE_BACKBONE,
                 'pivno_imagenet_pretrained': False,
             })
+        elif (use_gated_gru3_mobilenetv2_convex_bnfreeze
+              or use_gated_gru3_mobilenetv2_raw_dilated_joint
+              or use_gated_gru3_mobilenetv2_bins):
+            model_config.update(model_cls.ENCODER_CONFIG)
+            model_config['pivno_imagenet_pretrained'] = bool(
+                getattr(model, 'imagenet_pretrained', False)
+            )
         if use_mask_sr:
             model_config.update({
                 'model_variant': model.MODEL_VARIANT,
@@ -463,6 +522,25 @@ def train(args):
                 ),
                 'pivno_amp_policy': model.AMP_POLICY,
             })
+        if use_gated_gru3_bins_pivno:
+            bins_pretrained_lr = getattr(
+                args, 'pivno_bins_pretrained_lr', None
+            )
+            model_config.update({
+                'pivno_initialization_mode': model.INITIALIZATION_MODE,
+                'pivno_bins_stage': model.finetune_stage,
+                'pivno_num_init_bins': model.bin_initializer.num_bins,
+                'pivno_bins_max_offset': float(
+                    model.bin_initializer.bin_width
+                    * model.bin_initializer.num_bins
+                ),
+                'pivno_init_corr_scale': model.bin_initializer.corr_scale,
+                'pivno_bins_pretrained_lr': float(
+                    0.1 * args.lr
+                    if bins_pretrained_lr is None
+                    else bins_pretrained_lr
+                ),
+            })
         if use_gated_gru_kernel_ablation:
             model_config['pivno_low_feature_dim'] = int(
                 model.LOW_FEATURE_DIM
@@ -518,9 +596,8 @@ def train(args):
         )
 
     if args.distributed:
-        if use_pact:
-            # PACT uses a small per-rank batch. Frozen BN avoids SyncBN
-            # collectives in every recurrent step.
+        if freeze_batchnorm:
+            # Frozen BN avoids SyncBN collectives and preserves timm activations.
             model.freeze_bn()
         else:
             model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -529,7 +606,7 @@ def train(args):
             device_ids=[args.local_rank],
             output_device=args.local_rank,
             find_unused_parameters=False,
-            broadcast_buffers=not use_pact,
+            broadcast_buffers=not freeze_batchnorm,
             # Bucket-view aliasing benchmarks slower on the PCIe-only 3090
             # topology used here, despite saving one gradient copy.
             gradient_as_bucket_view=not use_pact,
@@ -780,15 +857,71 @@ def train(args):
             and checkpoint.get('model_config', {}).get('model')
             == 'defom_pivno_gated_gru3'
         )
+        bins_from_base_gru3 = (
+            use_gated_gru3_bins_pivno
+            and not use_gated_gru3_mobilenetv2_bins
+            and checkpoint_model_for_sr == 'defom_pivno_gated_gru3'
+        )
         load_strict = args.strict_resume and not (
             use_pact_smd_post and post_source_model == 'pact_smd'
         ) and not concat_from_gated_gru3 \
             and not sr_from_base_concat_gru3 \
             and not sr_from_base_gated_gru3 \
-            and not fusion_from_hidden_sr
+            and not fusion_from_hidden_sr \
+            and not bins_from_base_gru3
         incompatible = model_without_ddp.load_state_dict(
             checkpoint_state, strict=load_strict
         )
+        if use_gated_gru3_bins_pivno:
+            checkpoint_config = (
+                checkpoint.get('model_config', {})
+                if isinstance(checkpoint, dict) else {}
+            )
+            checkpoint_model = checkpoint_config.get('model')
+            compatible_models = (
+                (model_name,) if use_gated_gru3_mobilenetv2_bins else
+                ('defom_pivno_gated_gru3', model_name)
+            )
+            if checkpoint_model not in compatible_models:
+                raise ValueError(
+                    f'{model_name} can initialize only from '
+                    'defom_pivno_gated_gru3 or resume itself, got '
+                    f'{checkpoint_model!r}'
+                )
+            if checkpoint_model == 'defom_pivno_gated_gru3':
+                expected_missing = {
+                    name for name in model_without_ddp.state_dict()
+                    if name.startswith((
+                        'bin_initializer.', 'initial_weight_head.',
+                    ))
+                }
+                expected_unexpected = {
+                    name for name in checkpoint_state
+                    if name.startswith((
+                        'pivno.conv0.', 'pivno.conv1.',
+                        'pivno.disp_head.', 'pivno.gru.',
+                    ))
+                }
+                if (
+                    set(incompatible.missing_keys) != expected_missing
+                    or set(incompatible.unexpected_keys)
+                    != expected_unexpected
+                ):
+                    raise ValueError(
+                        'bins initialization checkpoint mismatch: '
+                        f'missing={incompatible.missing_keys}, '
+                        f'unexpected={incompatible.unexpected_keys}'
+                    )
+                logging.info(
+                    'Loaded all reusable gated-GRU3 weights, discarded '
+                    'the PIVNO decoder, and initialized only bins modules'
+                )
+            elif incompatible.missing_keys or incompatible.unexpected_keys:
+                raise ValueError(
+                    'bins checkpoint resume requires an exact model state: '
+                    f'missing={incompatible.missing_keys}, '
+                    f'unexpected={incompatible.unexpected_keys}'
+                )
         if use_concat_gru3_mask_sr:
             checkpoint_config = (
                 checkpoint.get('model_config', {})
@@ -1057,6 +1190,8 @@ def train(args):
                 if (
                     use_gated_gru1_pivno
                     or use_gated_gru3_pivno
+                    or use_gated_gru3_mobilenetv2_convex_bnfreeze
+                    or use_gated_gru3_mobilenetv2_raw_dilated_joint
                     or use_gated_gru3_gwc_only_pivno
                     or use_gated_gru_kernel_ablation
                 )
@@ -1304,6 +1439,14 @@ def train(args):
         ) and (
             not use_mask_sr
             or checkpoint_model_name == model_name
+        ) and (
+            not use_gated_gru3_bins_pivno
+            or (
+                checkpoint_model_name == model_name
+                and checkpoint.get('model_config', {}).get(
+                    'pivno_bins_stage'
+                ) == args.pivno_bins_stage
+            )
         )
         if 'optimizer' in checkpoint and 'step' in checkpoint and 'epoch' in checkpoint and not \
                 args.no_resume_optimizer and same_optimizer_architecture:
@@ -1347,7 +1490,7 @@ def train(args):
         logger.total_steps = total_steps
 
     model.train()
-    if use_pact:
+    if freeze_batchnorm:
         # model.train() re-enables BatchNorm, so freeze it afterwards.
         model_without_ddp.freeze_bn()
     # The from-scratch PACT auxiliary losses are initially much larger than
@@ -1492,15 +1635,30 @@ def train(args):
 
             try:
                 if use_pivno:
-                    sequence_loss, metrics = pact_pivno_sequence_loss(
-                        pivno_init_predictions,
-                        pivno_recurrent_predictions,
-                        disp_gt,
-                        valid,
-                        max_disp=args.max_disp,
-                    )
+                    if (
+                        use_gated_gru3_bins_pivno
+                        and args.pivno_bins_stage == 'init'
+                    ):
+                        sequence_loss, metrics = pivno_initialization_loss(
+                            pivno_init_predictions,
+                            disp_gt,
+                            valid,
+                            max_disp=args.max_disp,
+                        )
+                    else:
+                        sequence_loss, metrics = pact_pivno_sequence_loss(
+                            pivno_init_predictions,
+                            pivno_recurrent_predictions,
+                            disp_gt,
+                            valid,
+                            max_disp=args.max_disp,
+                        )
                     if use_scale_gate_pivno:
                         metrics.update(model_without_ddp.scale_gate_metrics())
+                    if use_gated_gru3_bins_pivno:
+                        metrics.update(
+                            model_without_ddp.initialization_metrics()
+                        )
                 elif use_pact_bilap:
                     sequence_loss, metrics = bilap_sequence_loss(disp_predictions, disp_gt, valid, max_disp=args.max_disp, gamma=0.9, nll_weight=args.bilap_nll_weight, map_weight=args.bilap_map_weight, edge_weight=args.bilap_edge_weight, diversity_weight=args.bilap_diversity_weight, diversity_margin=args.bilap_diversity_margin, nll_edge_only=args.bilap_nll_region == 'edge')
                 else:
@@ -1780,7 +1938,7 @@ def train(args):
                 if args.distributed:
                     torch.distributed.barrier()
                 model.train()
-                if use_pact:
+                if freeze_batchnorm:
                     model_without_ddp.freeze_bn()
 
             if total_steps >= args.num_steps:
@@ -1850,7 +2008,7 @@ if __name__ == '__main__':
     parser.add_argument('--name', default='defom-stereo', help="name your experiment")
     parser.add_argument(
         '--model',
-        choices=['legacy', 'pact_pivno', 'defom_pivno', 'defom_pivno_mobilenetv2', 'defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru3_gwc_only', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gwc4_enc16_concat_gru3', 'defom_pivno_gwc4_enc16_concat_gru3_mask_sr'],
+        choices=['legacy', 'pact_pivno', 'defom_pivno', 'defom_pivno_mobilenetv2', 'defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru3_mobilenetv2_convex_bnfreeze', 'defom_pivno_gated_gru3_mobilenetv2_raw_dilated_joint', 'defom_pivno_gated_gru3_bins', 'defom_pivno_gated_gru3_mobilenetv2_bins', 'defom_pivno_gated_gru3_gwc_only', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gwc4_enc16_concat_gru3', 'defom_pivno_gwc4_enc16_concat_gru3_mask_sr'],
         default='legacy',
         help="model family; PACT is opt-in to preserve existing checkpoints",
     )
@@ -1874,6 +2032,21 @@ if __name__ == '__main__':
         default=None,
         help='max LR for defom_pivno_gated scale_gate; defaults to --lr',
     )
+    parser.add_argument(
+        '--pivno_bins_stage',
+        choices=['init', 'joint'],
+        default='init',
+        help='train only new bins modules or jointly fine-tune all modules',
+    )
+    parser.add_argument(
+        '--pivno_bins_pretrained_lr',
+        type=float,
+        default=None,
+        help='joint-stage LR for reused weights; defaults to 0.1 * --lr',
+    )
+    parser.add_argument('--pivno_num_init_bins', type=int, default=48)
+    parser.add_argument('--pivno_bins_max_offset', type=float, default=None)
+    parser.add_argument('--pivno_init_corr_scale', type=float, default=10.0)
     parser.add_argument(
         '--pivno_gru_kernel_size',
         type=int,

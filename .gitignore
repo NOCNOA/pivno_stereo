@@ -17,6 +17,6 @@ logs/
 # Python caches
 __pycache__/
 *.py[cod]
-
+*.orig
 # Machine-local dataset paths
 .dataset_env

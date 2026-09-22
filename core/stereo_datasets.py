@@ -601,7 +601,8 @@ def fetch_dataset(args):
         elif dataset_name == 'sceneflow':
             clean_dataset = SceneFlowDatasets(aug_params, dstype='frames_cleanpass')
             final_dataset = SceneFlowDatasets(aug_params, dstype='frames_finalpass')
-            new_dataset = final_dataset*fold + clean_dataset*fold
+            #new_dataset = final_dataset*fold + clean_dataset*fold
+            new_dataset = final_dataset*fold
             logging.info(f"Adding {len(new_dataset)} samples from SceneFlow")
         elif dataset_name == 'sceneflow_finalpass':
             final_dataset = SceneFlowDatasets(

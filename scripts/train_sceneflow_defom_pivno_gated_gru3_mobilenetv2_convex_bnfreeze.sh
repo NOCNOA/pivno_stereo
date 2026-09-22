@@ -44,7 +44,7 @@ for ((gpu_index = 0; gpu_index < NUM_GPUS; gpu_index++)); do
   GPU_IDS+=("${gpu_index}")
 done
 
-NAME="${NAME:-defom_pivno_gated_gru3_gwc4gate_enc16_noleft_rgb_d768_${IMAGE_HEIGHT}x${IMAGE_WIDTH}_b${BATCH_SIZE}_${NUM_GPUS}gpu_200k_64channel}"
+NAME="${NAME:-defom_pivno_gated_gru3_mobilenetv2_convex_bnfreeze_d768_${IMAGE_HEIGHT}x${IMAGE_WIDTH}_b${BATCH_SIZE}_${NUM_GPUS}gpu_200k_64channel}"
 CHECKPOINT_DIR="checkpoints/${NAME}"
 mkdir -p "${CHECKPOINT_DIR}"
 
@@ -55,7 +55,7 @@ for subset in FlyingThings3D Monkaa Driving; do
   fi
 done
 
-echo "Launching DEFOM-PIVNO-gated-GRU3:"
+echo "Launching DEFOM-PIVNO gated-GRU3 MobileNetV2 convex BN-freeze:"
 echo "  GPUs=${CUDA_VISIBLE_DEVICES}, global_batch=${BATCH_SIZE}, local_batch=${LOCAL_BATCH_SIZE}"
 echo "  data=${SCENEFLOW_ROOT}, checkpoint=${CHECKPOINT_DIR}"
 
@@ -64,7 +64,7 @@ echo "  data=${SCENEFLOW_ROOT}, checkpoint=${CHECKPOINT_DIR}"
   --master_addr=127.0.0.1 \
   --master_port="${MASTER_PORT}" \
   train_stereo.py \
-  --model defom_pivno_gated_gru3 \
+  --model defom_pivno_gated_gru3_mobilenetv2_convex_bnfreeze \
   --distributed \
   --launcher pytorch \
   --gpu_ids "${GPU_IDS[@]}" \

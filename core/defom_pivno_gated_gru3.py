@@ -327,11 +327,6 @@ class DEFOMStereo(nn.Module):
             max=self.max_delta_disp,
         )
 
-    def _build_right_feature_pyramid(self, fmap2_low):
-        """Build iterative-matching features after initial disparity exists."""
-        fmap2_half, fmap2_quarter = self.right_width_compressor(fmap2_low)
-        return fmap2_low, fmap2_half, fmap2_quarter
-
     def freeze_bn(self):
         for module in self.modules():
             if isinstance(module, (nn.BatchNorm2d, nn.BatchNorm3d)):
@@ -341,6 +336,7 @@ class DEFOMStereo(nn.Module):
         """Upsample a quarter-resolution disparity with a convex mask."""
         batch, channels, height, width = flow.shape
         factor = 2 ** self.args.n_downsample
+        #一个小patch内部各自像素对于低分辨率下9个视差的权重，越来越感觉mask才是需要SR的那个。。
         mask = mask.view(
             batch,
             1,
@@ -446,8 +442,15 @@ class DEFOMStereo(nn.Module):
         fmap1_low = self.low_channel(fmap1_4)
         fmap2_low = self.low_channel(fmap2_4)
         del fmap1_4, fmap2_4
-        right_feature_pyramid = self._build_right_feature_pyramid(fmap2_low)
-        del fmap2_low
+        fmap2_half, fmap2_quarter = self.right_width_compressor(
+            fmap2_low
+        )
+        right_feature_pyramid = (
+            fmap2_low,
+            fmap2_half,
+            fmap2_quarter,
+        )
+        del fmap2_low, fmap2_half, fmap2_quarter
 
         disp_predictions = []
         for _ in range(iters):

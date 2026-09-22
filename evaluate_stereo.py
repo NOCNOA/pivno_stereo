@@ -13,10 +13,13 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from core.pivno_models.defom_pact_pivno import DEFOMStereo as PACTPIVNODEFOMStereo
 from core.pivno_models.defom_pivno import DEFOMStereo as PIVNODEFOMStereo
-from core.pivno_models.defom_pivno_mobilenetv2 import DEFOMStereo as MobileNetV2PIVNODEFOMStereo
+from core.pivno_models.defom_pivno_mobilenet.defom_pivno_mobilenetv2 import DEFOMStereo as MobileNetV2PIVNODEFOMStereo
+from core.pivno_models.defom_pivno_mobilenet.defom_pivno_gated_gru3_mobilenetv2_convex_bnfreeze import DEFOMStereo as GatedGRU3MobileNetV2ConvexBNFreezePIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated import DEFOMStereo as GatedPIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated_gru1 import DEFOMStereo as GatedGRU1PIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated_gru3 import DEFOMStereo as GatedGRU3PIVNODEFOMStereo
+from core.pivno_models.defom_pivno_gated_gru3_bins import DEFOMStereo as GatedGRU3BinsPIVNODEFOMStereo
+from core.pivno_models.defom_pivno_mobilenet.defom_pivno_gated_gru3_mobilenetv2_bins import DEFOMStereo as GatedGRU3MobileNetV2BinsPIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated_gru3_gwc_only import DEFOMStereo as GatedGRU3GWCOnlyPIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated_gru_kernel_ablation import DEFOMStereo as GatedGRUKernelAblationPIVNODEFOMStereo
 from core.pivno_models.defom_pivno_gated_gru3_gwc4_mask_sr import DEFOMStereo as GatedGRU3GWC4MaskSRPIVNODEFOMStereo
@@ -320,7 +323,7 @@ def save_residual_gray_png_1hw(pred: torch.Tensor,
 
 @torch.no_grad()
 def validate_things(model, iters=32, scale_iters=8, mixed_prec=False,
-                    max_disp=1000, bad_threshold=3.0, batch_size=1):
+                    max_disp=1000, bad_threshold=3.0, batch_size=1, initial_disparity=False):
     """Perform validation using the FlyingThings3D TEST split."""
     if batch_size <= 0:
         raise ValueError(f"evaluation batch size must be positive, got {batch_size}")
@@ -351,8 +354,22 @@ def validate_things(model, iters=32, scale_iters=8, mixed_prec=False,
         padder = InputPadder(image1.shape, divis_by=32)
         image1, image2 = padder.pad(image1, image2)
         start = time.time()
-        disp_pr = _eval_forward(model, mixed_prec, image1, image2,
-                                iters=iters, scale_iters=scale_iters, test_mode=True)
+        if initial_disparity:
+            if model.MODEL_VARIANT == "defom_pivno_gated_gru3":
+                rgb1 = model._to_pivno_rgb(image1).contiguous().float()
+                rgb2 = model._to_pivno_rgb(image2).contiguous().float()
+                disp_pr = model.pivno(rgb1, rgb2)[-1]
+            elif model.MODEL_VARIANT in (
+                "defom_pivno_gated_gru3_bins",
+                "defom_pivno_gated_gru3_mobilenetv2_bins",
+            ):
+                init_predictions, _ = model(image1, image2, iters=1, test_mode=False)
+                disp_pr = init_predictions[-1]
+            else:
+                raise ValueError("d0 evaluation requires gated_gru3 or gated_gru3_bins")
+        else:
+            disp_pr = _eval_forward(model, mixed_prec, image1, image2,
+                                    iters=iters, scale_iters=scale_iters, test_mode=True)
         end = time.time()
         if min(batch_ids) > 50:
             elapsed_sum += end - start
@@ -411,7 +428,8 @@ def validate_things(model, iters=32, scale_iters=8, mixed_prec=False,
                 int(skipped_count),
             )
         aggregate_fps = _world_size() / avg_runtime
-        print(f"Validation FlyingThings: EPE {epe}, Out{bad_threshold} {out}, "
+        label = "FlyingThings d0" if initial_disparity else "FlyingThings"
+        print(f"Validation {label}: EPE {epe}, Out{bad_threshold} {out}, "
               f"{format(aggregate_fps, '.2f')}-FPS aggregate "
               f"({format(avg_runtime, '.3f')}s/image/GPU)")
     return {'things-epe': epe, 'things-out': out}
@@ -901,7 +919,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument(
         '--model',
-        choices=['cor_ga', 'pact_pivno', 'defom_pivno', 'defom_pivno_mobilenetv2', 'defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru3_gwc_only', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gwc4_enc16_concat_gru3', 'defom_pivno_gwc4_enc16_concat_gru3_mask_sr'],
+        choices=['cor_ga', 'pact_pivno', 'defom_pivno', 'defom_pivno_mobilenetv2', 'defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru3_mobilenetv2_convex_bnfreeze', 'defom_pivno_gated_gru3_bins', 'defom_pivno_gated_gru3_mobilenetv2_bins', 'defom_pivno_gated_gru3_gwc_only', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gwc4_enc16_concat_gru3', 'defom_pivno_gwc4_enc16_concat_gru3_mask_sr'],
         default='cor_ga',
         help="model family; PACT is opt-in to preserve old checkpoint loading",
     )
@@ -925,6 +943,9 @@ if __name__ == '__main__':
     )
     parser.add_argument('--pivno_mask_sr_stage', choices=['head', 'joint'], default='head')
     parser.add_argument('--pivno_mask_sr_residual_max', type=float, default=4.0)
+    parser.add_argument('--pivno_num_init_bins', type=int, default=48)
+    parser.add_argument('--pivno_bins_max_offset', type=float, default=None)
+    parser.add_argument('--pivno_init_corr_scale', type=float, default=10.0)
     parser.add_argument(
         '--pivno_gru_kernel_size',
         type=int,
@@ -937,6 +958,9 @@ if __name__ == '__main__':
     parser.add_argument('--scale_iters', type=int, default=20, help="number of scaling updates to the disparity field in each forward pass.")
     parser.add_argument('--eval_batch_size', type=int, default=1,
                         help='per-GPU batch size for FlyingThings evaluation')
+
+    parser.add_argument("--eval_initial_disparity", action="store_true",
+                        help="evaluate full-resolution d0 on FlyingThings")
 
     # Architecure choices
     parser.add_argument('--dinov2_encoder', type=str, default='vits', choices=['vits', 'vitb', 'vitl', 'vitg'])
@@ -958,7 +982,7 @@ if __name__ == '__main__':
                         help='shard evaluation samples across torchrun processes')
 
     args = parser.parse_args()
-    pact_model = args.model in ('pact_pivno', 'defom_pivno', 'defom_pivno_mobilenetv2', 'defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru3_gwc_only', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gwc4_enc16_concat_gru3', 'defom_pivno_gwc4_enc16_concat_gru3_mask_sr')
+    pact_model = args.model in ('pact_pivno', 'defom_pivno', 'defom_pivno_mobilenetv2', 'defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru3_mobilenetv2_convex_bnfreeze', 'defom_pivno_gated_gru3_bins', 'defom_pivno_gated_gru3_mobilenetv2_bins', 'defom_pivno_gated_gru3_gwc_only', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gwc4_enc16_concat_gru3', 'defom_pivno_gwc4_enc16_concat_gru3_mask_sr')
     if args.max_disp is None:
         if pact_model:
             parser.error('--max_disp is required for PACT because legacy checkpoints do not store it')
@@ -1004,6 +1028,15 @@ if __name__ == '__main__':
                     ])
                 if args.model == 'defom_pivno_gated_gru_kernel_ablation':
                     restore_fields.append(('pivno_gru_kernel_size', None))
+                if args.model in (
+                    'defom_pivno_gated_gru3_bins',
+                    'defom_pivno_gated_gru3_mobilenetv2_bins',
+                ):
+                    restore_fields.extend([
+                        ('pivno_num_init_bins', 48),
+                        ('pivno_bins_max_offset', None),
+                        ('pivno_init_corr_scale', 10.0),
+                    ])
                 if args.model in ('pact', 'pact_smd', 'pact_smd_post', 'pact_bilap_gru'):
                     restore_fields.extend([
                         ('pact_min_radius', 1.0),
@@ -1064,6 +1097,8 @@ if __name__ == '__main__':
         model_cls = PIVNODEFOMStereo
     elif args.model == 'defom_pivno_mobilenetv2':
         model_cls = MobileNetV2PIVNODEFOMStereo
+    elif args.model == 'defom_pivno_gated_gru3_mobilenetv2_convex_bnfreeze':
+        model_cls = GatedGRU3MobileNetV2ConvexBNFreezePIVNODEFOMStereo
     elif args.model == 'defom_pivno_gwc4_enc16_concat_gru3':
         model_cls = GWC4Enc16ConcatGRU3PIVNODEFOMStereo
     elif args.model == 'defom_pivno_gwc4_enc16_concat_gru3_mask_sr':
@@ -1078,6 +1113,10 @@ if __name__ == '__main__':
         model_cls = GatedGRUKernelAblationPIVNODEFOMStereo
     elif args.model == 'defom_pivno_gated_gru3':
         model_cls = GatedGRU3PIVNODEFOMStereo
+    elif args.model == 'defom_pivno_gated_gru3_mobilenetv2_bins':
+        model_cls = GatedGRU3MobileNetV2BinsPIVNODEFOMStereo
+    elif args.model == 'defom_pivno_gated_gru3_bins':
+        model_cls = GatedGRU3BinsPIVNODEFOMStereo
     elif args.model == 'defom_pivno_gated_gru3_gwc_only':
         model_cls = GatedGRU3GWCOnlyPIVNODEFOMStereo
     elif args.model == 'defom_pivno_gated':
@@ -1099,7 +1138,7 @@ if __name__ == '__main__':
         "amp_owner=%s world_size=%s things_batch_size_per_gpu=%s "
         "things_global_batch_size=%s",
         args.model, args.max_disp, args.eval_max_disp, args.mixed_precision,
-        "model" if _model_manages_amp(model) else "evaluator",
+        "model" if bool(getattr(model, "mixed_precision", False)) else "evaluator",
         _world_size(),
         args.eval_batch_size,
         args.eval_batch_size * _world_size(),
@@ -1141,7 +1180,7 @@ if __name__ == '__main__':
                 'n_gru_layers': int(args.n_gru_layers),
                 'hidden_dims': list(args.hidden_dims),
             }
-            if args.model in ('pact_pivno', 'defom_pivno', 'defom_pivno_mobilenetv2', 'defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru3_gwc_only', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr', 'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr', 'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr', 'defom_pivno_gwc4_enc16_concat_gru3', 'defom_pivno_gwc4_enc16_concat_gru3_mask_sr'):
+            if args.model in ('pact_pivno', 'defom_pivno', 'defom_pivno_mobilenetv2', 'defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru3_mobilenetv2_convex_bnfreeze', 'defom_pivno_gated_gru3_bins', 'defom_pivno_gated_gru3_mobilenetv2_bins', 'defom_pivno_gated_gru3_gwc_only', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr', 'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr', 'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr', 'defom_pivno_gwc4_enc16_concat_gru3', 'defom_pivno_gwc4_enc16_concat_gru3_mask_sr'):
                 expected.update({
                     'model': (
                         'defom_pivno_gated_gru3'
@@ -1155,12 +1194,15 @@ if __name__ == '__main__':
                     ),
                     'state_mode': 'pivno_single_current_disp',
                 })
-                if args.model in ('defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru3_gwc_only', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr', 'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr', 'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr'):
+                if args.model in ('defom_pivno_gated', 'defom_pivno_gated_gru1', 'defom_pivno_gated_gru3', 'defom_pivno_gated_gru3_mobilenetv2_convex_bnfreeze', 'defom_pivno_gated_gru3_bins', 'defom_pivno_gated_gru3_gwc_only', 'defom_pivno_gated_gru_kernel_ablation', 'defom_pivno_gated_gru3_gwc4_mask_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_sr', 'defom_pivno_gated_gru3_gwc4_mask_rgb_hidden_sr', 'defom_pivno_gated_gru3_gwc4_mask_last_delta_sr', 'defom_pivno_gated_gru3_gwc4_last_delta_direct_sr'):
                     expected['pivno_scale_gate'] = model_cls.SCALE_GATE_MODE
                     expected['corr_radius'] = int(args.corr_radius)
                 if args.model in (
                     'defom_pivno_gated_gru1',
                     'defom_pivno_gated_gru3',
+                    'defom_pivno_gated_gru3_mobilenetv2_convex_bnfreeze',
+                    'defom_pivno_gated_gru3_bins',
+                    'defom_pivno_gated_gru3_mobilenetv2_bins',
                     'defom_pivno_gated_gru3_gwc_only',
                     'defom_pivno_gated_gru_kernel_ablation',
                     'defom_pivno_gated_gru3_gwc4_mask_sr',
@@ -1191,6 +1233,19 @@ if __name__ == '__main__':
                             model.LOW_FEATURE_DIM
                         )
                 if args.model in (
+                    'defom_pivno_gated_gru3_bins',
+                    'defom_pivno_gated_gru3_mobilenetv2_bins',
+                ):
+                    expected.update({
+                        'pivno_initialization_mode': model.INITIALIZATION_MODE,
+                        'pivno_num_init_bins': model.bin_initializer.num_bins,
+                        'pivno_bins_max_offset': float(
+                            model.bin_initializer.bin_width
+                            * model.bin_initializer.num_bins
+                        ),
+                        'pivno_init_corr_scale': model.bin_initializer.corr_scale,
+                    })
+                if args.model in (
                     'defom_pivno_gwc4_enc16_concat_gru3',
                     'defom_pivno_gwc4_enc16_concat_gru3_mask_sr',
                 ):
@@ -1213,7 +1268,7 @@ if __name__ == '__main__':
                     })
                 if 'pivno_input_channels' in config:
                     expected['pivno_input_channels'] = int(
-                        args.pivno_input_channels
+                        getattr(args, "pivno_input_channels", config["pivno_input_channels"])
                     )
                 if args.model == 'defom_pivno_mobilenetv2':
                     expected.update({
@@ -1221,6 +1276,12 @@ if __name__ == '__main__':
                         'pivno_feature_encoder': model_cls.FEATURE_BACKBONE,
                         'pivno_imagenet_pretrained': False,
                     })
+                elif args.model in (
+                    'defom_pivno_gated_gru3_mobilenetv2_convex_bnfreeze',
+                    'defom_pivno_gated_gru3_mobilenetv2_bins',
+                ):
+                    expected.update(model_cls.ENCODER_CONFIG)
+                    expected['pivno_imagenet_pretrained'] = False
                 if args.model in (
                     'defom_pivno_gated_gru3_gwc4_mask_sr',
                     'defom_pivno_gated_gru3_gwc4_mask_rgb_sr',
@@ -1458,6 +1519,7 @@ if __name__ == '__main__':
                 mixed_prec=use_mixed_precision,
                 max_disp=args.eval_max_disp if args.eval_max_disp > 0 else args.max_disp,
                 batch_size=args.eval_batch_size,
+                initial_disparity=args.eval_initial_disparity,
             )
 
     if 'eth3d' in args.datasets:

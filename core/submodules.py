@@ -1257,13 +1257,6 @@ def sample_right_feature_pyramid(right_features, disp, offsets, compression_rati
     sampled_scales = []
 
     for right_feat, ratio in zip(right_features, compression_ratios):
-        if right_feat.ndim != 4:
-            raise ValueError(f"Every right feature must be [B,C,H,W], got {tuple(right_feat.shape)}")
-        if right_feat.shape[0] != batch or right_feat.shape[2] != query_height:
-            raise ValueError(f"Right feature batch/height must match disp, got {tuple(right_feat.shape)} and {tuple(disp.shape)}")
-        if ratio < 1:
-            raise ValueError(f"compression ratios must be positive, got {ratio}")
-
         source_width = right_feat.shape[-1]
         source_height = right_feat.shape[-2]
         center_offset = (float(ratio) - 1.0) / 2.0
@@ -1295,6 +1288,85 @@ def sample_right_feature_pyramid(right_features, disp, offsets, compression_rati
         sampled_scales.append(sampled.to(right_feat.dtype).reshape(batch, sample_count, channels, query_height, query_width))
 
     return torch.cat(sampled_scales, dim=1) #batch, sample_count*level, channels, query_height, query_width
+
+
+def sample_right_feature_dilated_scales(
+    right_feature,
+    disp,
+    offsets,
+    dilation_rates=(1, 2, 4),
+    padding_mode='zeros',
+    align_corners=True,
+):
+    """Sample several physical ranges from one uncompressed right feature."""
+    if right_feature.ndim != 4:
+        raise ValueError(
+            "right_feature must be [B,C,H,W], got "
+            f"{tuple(right_feature.shape)}"
+        )
+    if disp.ndim != 4 or disp.shape[1] != 1:
+        raise ValueError(f"disp must be [B,1,H,W], got {tuple(disp.shape)}")
+
+    batch, channels, height, width = right_feature.shape
+    if tuple(disp.shape) != (batch, 1, height, width):
+        raise ValueError(
+            "right_feature and disp must share batch/height/width, got "
+            f"{tuple(right_feature.shape)} and {tuple(disp.shape)}"
+        )
+
+    offsets = torch.as_tensor(
+        offsets, device=disp.device, dtype=disp.dtype
+    ).flatten()
+    dilations = torch.as_tensor(
+        dilation_rates, device=disp.device, dtype=disp.dtype
+    ).flatten()
+    if offsets.numel() == 0 or dilations.numel() == 0:
+        raise ValueError("offsets and dilation_rates must be non-empty")
+    if not bool(torch.all(dilations > 0)):
+        raise ValueError(f"dilation rates must be positive, got {dilation_rates}")
+
+    scale_count = dilations.numel()
+    candidate_count = offsets.numel()
+    physical_correction_full_px = (
+        -4.0 * dilations[:, None] * offsets[None, :]
+    )
+    correction_low = physical_correction_full_px / 4.0
+    x_left = torch.arange(
+        width, device=disp.device, dtype=disp.dtype
+    ).view(1, 1, 1, 1, width)
+    y = torch.arange(
+        height, device=disp.device, dtype=disp.dtype
+    ).view(1, 1, 1, height, 1)
+    x_right = (
+        x_left
+        - disp[:, None]
+        - correction_low.view(1, scale_count, candidate_count, 1, 1)
+    )
+    y_right = y.expand(batch, scale_count, candidate_count, height, width)
+
+    if align_corners:
+        x_norm = 2.0 * x_right / max(width - 1, 1) - 1.0
+        y_norm = 2.0 * y_right / max(height - 1, 1) - 1.0
+    else:
+        x_norm = 2.0 * (x_right + 0.5) / width - 1.0
+        y_norm = 2.0 * (y_right + 0.5) / height - 1.0
+
+    grid = torch.stack((x_norm, y_norm), dim=-1).reshape(
+        batch * scale_count * candidate_count, height, width, 2
+    )
+    expanded = right_feature[:, None, None].expand(
+        batch, scale_count, candidate_count, channels, height, width,
+    ).reshape(
+        batch * scale_count * candidate_count, channels, height, width,
+    )
+    with torch.cuda.amp.autocast(enabled=False):
+        sampled = F.grid_sample(
+            expanded.float(), grid.float(), mode='bilinear',
+            padding_mode=padding_mode, align_corners=align_corners,
+        )
+    return sampled.to(right_feature.dtype).reshape(
+        batch, scale_count * candidate_count, channels, height, width,
+    )
 
 
 def encode_sampled_right_features(

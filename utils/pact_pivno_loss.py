@@ -41,6 +41,67 @@ def _check_prediction(
     return prediction
 
 
+def pivno_initialization_loss(
+    init_predictions: Sequence[torch.Tensor],
+    disp_gt: torch.Tensor,
+    valid: torch.Tensor,
+    *,
+    max_disp: float = 768.0,
+    gamma: float = 0.9,
+    smooth_l1_beta: float = 1.0,
+) -> Tuple[torch.Tensor, Dict[str, float]]:
+    """Train a disparity initializer without executing recurrent refinement."""
+    if not init_predictions:
+        raise ValueError("init_predictions must contain at least one prediction")
+
+    disp_gt = _as_disp_4d(disp_gt).float()
+    valid = _as_disp_4d(valid)
+    finite_gt = torch.isfinite(disp_gt)
+    safe_gt = torch.where(finite_gt, disp_gt, torch.zeros_like(disp_gt))
+    valid_mask = (
+        (valid >= 0.5)
+        & finite_gt
+        & (safe_gt >= 0.0)
+        & (safe_gt < float(max_disp))
+    )
+    valid_float = valid_mask.float()
+    denominator = valid_float.sum().clamp_min(1.0)
+    checked = [
+        _check_prediction(prediction, safe_gt.shape, f"init[{index}]")
+        for index, prediction in enumerate(init_predictions)
+    ]
+
+    loss = safe_gt.new_zeros(())
+    for index, prediction in enumerate(checked):
+        per_pixel = F.smooth_l1_loss(
+            prediction.float(),
+            safe_gt,
+            reduction="none",
+            beta=float(smooth_l1_beta),
+        )
+        loss = loss + _sequence_weight(
+            index, len(checked), gamma
+        ) * (per_pixel * valid_float).sum() / denominator
+
+    final_error = (checked[-1].float() - safe_gt).abs()[valid_mask]
+    if final_error.numel() > 0:
+        epe = final_error.mean().item()
+        px1 = (final_error < 1.0).float().mean().item()
+        px3 = (final_error < 3.0).float().mean().item()
+        px5 = (final_error < 5.0).float().mean().item()
+    else:
+        epe = px1 = px3 = px5 = 0.0
+
+    return loss, {
+        "epe": epe,
+        "1px": px1,
+        "3px": px3,
+        "5px": px5,
+        "pivno_init_smooth_l1": loss.detach().item(),
+        "total_loss": loss.detach().item(),
+    }
+
+
 def pact_pivno_sequence_loss(
     init_predictions: Sequence[torch.Tensor],
     recurrent_predictions: Sequence[torch.Tensor],

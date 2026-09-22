@@ -5,7 +5,7 @@ import torch
 
 from PIVNO.models.sronet_mobilenetv2 import MobileNetV2FeatureEncoder
 from core.pivno_models.defom_pivno import DEFOMStereo as BaseDEFOMStereo
-from core.pivno_models.defom_pivno_mobilenetv2 import DEFOMStereo
+from core.pivno_models.defom_pivno_mobilenet.defom_pivno_mobilenetv2 import DEFOMStereo
 
 
 def make_args():
